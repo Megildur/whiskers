@@ -1,0 +1,16 @@
+# Secrets
+.env
+
+# Downloaded at first start (big)
+engine/
+models/
+
+# Database and logs
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

@@ -1,0 +1,113 @@
+import asyncio
+import time
+
+from whiskers.db import Database, default_journal
+
+
+def run(coro):
+    return asyncio.run(coro)
+
+
+async def open_db(tmp_path):
+    db = Database(tmp_path / "test.db")
+    await db.connect()
+    return db
+
+
+def test_settings_and_channel_rules(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        assert (await db.guild_settings(1)).mode == "allowlist"
+        await db.update_guild_settings(1, mode="everywhere", chattiness=20)
+        settings = await db.guild_settings(1)
+        assert (settings.mode, settings.chattiness) == ("everywhere", 20)
+
+        await db.set_channel_rule(1, 10, rule="allow")
+        await db.set_channel_rule(1, 10, chattiness=50)  # keeps the rule
+        rule = (await db.channel_rules(1))[10]
+        assert (rule.rule, rule.chattiness) == ("allow", 50)
+        await db.set_channel_rule(1, 10, rule=None, chattiness=None)
+        assert 10 not in await db.channel_rules(1)
+        await db.close()
+
+    run(go())
+
+
+def test_memory_search_and_forgetting_a_person(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        await db.touch_profile(1, 7, "Alice", chatted=True)
+        await db.add_memory(1, 10, "Alice gave Whiskers a laser pointer.", [7])
+        await db.add_memory(1, 10, "Bob talked about his new bike.", [8])
+        await db.add_memory(2, 20, "A laser show in another server.", [])
+
+        found = await db.search_memories(1, ["laser"])
+        assert [m.content for m in found] == ["Alice gave Whiskers a laser pointer."]
+        assert [m.content for m in await db.memories_about(1, 7)] == ["Alice gave Whiskers a laser pointer."]
+
+        await db.add_message(1, 10, 555, 7, "Alice", "hi", time.time())
+        await db.forget_user(1, 7)
+        assert await db.profile(1, 7) is None
+        assert await db.search_memories(1, ["laser"]) == []
+        assert await db.recent_messages(10, 10) == []
+        assert len(await db.search_memories(1, ["bike"])) == 1
+        await db.close()
+
+    run(go())
+
+
+def test_facts_merge_without_duplicates(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        await db.touch_profile(1, 7, "Alice", chatted=False)
+        await db.add_facts(1, 7, ["Works night shifts", "Has a dog"])
+        await db.add_facts(1, 7, ["works night shifts.", "Has a dog named Rex"])
+        assert (await db.profile(1, 7)).facts == ["works night shifts.", "Has a dog named Rex"]
+        await db.close()
+
+    run(go())
+
+
+def test_journal_history_and_undo(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        assert (await db.journal(1)).text == default_journal("Whiskers")
+        await db.set_journal(1, "- v2", "test")
+        await db.set_journal(1, "- v3", "test")
+        assert (await db.journal(1)).version == 3
+        assert (await db.undo_journal(1)).text == "- v2"
+        assert (await db.undo_journal(1)).text == default_journal("Whiskers")
+        assert await db.undo_journal(1) is None
+        await db.close()
+
+    run(go())
+
+
+def test_reflection_becomes_due_after_enough_cat_messages(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        for _ in range(3):
+            await db.count_cat_message(1)
+        assert await db.reflection_due(every=3, min_seconds=0) == [1]
+        await db.mark_reflected(1)
+        assert await db.reflection_due(every=3, min_seconds=0) == []
+        await db.close()
+
+    run(go())
+
+
+def test_summary_batches_busy_or_quiet_channels(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        now = time.time()
+        for i in range(5):
+            await db.add_message(1, 10, i, 7, "Alice", f"busy {i}", now)
+        for i in range(6):
+            await db.add_message(1, 20, 100 + i, 7, "Alice", f"old {i}", now - 3600)
+        batch = await db.summary_batch(full=30, quiet=6, quiet_seconds=2700)
+        assert [m.channel_id for m in batch] == [20] * 6
+        await db.mark_summarized([m.id for m in batch])
+        assert await db.summary_batch(full=5) != []  # channel 10 now counts as busy enough
+        await db.close()
+
+    run(go())

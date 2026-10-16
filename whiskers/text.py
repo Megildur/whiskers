@@ -1,0 +1,87 @@
+"""Small text helpers: tidying Discord messages for the model and the model's output for Discord."""
+from __future__ import annotations
+
+import re
+
+CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
+WORD = re.compile(r"[a-z0-9']{3,}")
+SPEAKER_LABEL = re.compile(r"^\**\s*([^\s:*][^:\n*]{0,40}?)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*")
+
+STOPWORDS = frozenset("""
+the and you your you're for are was were but not with this that have has had what when where who why how
+just like can could would should will its it's about from they them their there then than into out our
+very really too also some any all get got going gonna want did does doing don't i'm im lol lmao yes yeah
+okay one two now here him her his she he we me my mine yours been being because which while over more
+much most own same such only other again still ever even well back make made know think see say said
+""".split())
+
+
+def readable(content: str) -> str:
+    """Discord markup the model doesn't need to see, made plain."""
+    content = CUSTOM_EMOJI.sub(r":\1:", content)
+    lines = (" ".join(line.split()) for line in content.splitlines())
+    return "\n".join(line for line in lines if line)
+
+
+def keywords(text: str, limit: int = 8) -> list[str]:
+    seen: list[str] = []
+    for word in WORD.findall(text.lower()):
+        word = word.strip("'")
+        if len(word) >= 3 and word not in STOPWORDS and word not in seen:
+            seen.append(word)
+    return seen[:limit]
+
+
+def clean_reply(text: str, bot_name: str, other_names: list[str]) -> str:
+    """Turn raw model output into one Discord message from the cat."""
+    others = {name.lower() for name in other_names if name}
+    bot = bot_name.lower()
+    lines: list[str] = []
+    for line in text.strip().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("(") and "private notes" in stripped.lower():
+            break
+        label = SPEAKER_LABEL.match(stripped)
+        if label:
+            speaker = label.group(1).strip().lower()
+            if speaker == bot:
+                line = stripped[label.end():]
+            elif speaker in others:
+                break  # the model started writing someone else's next message
+        lines.append(line)
+    text = "\n".join(lines).strip()
+    if len(text) >= 2 and text[0] == text[-1] == '"' and text.count('"') == 2:
+        text = text[1:-1].strip()
+    text = text.replace("@everyone", "@​everyone").replace("@here", "@​here")
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    if len(text) > 1900:
+        cut = text[:1900]
+        end = max(cut.rfind(". "), cut.rfind("* "), cut.rfind("\n"))
+        text = cut[: end + 1] if end > 1000 else cut
+    return text.strip()
+
+
+def split_message(text: str, limit: int = 2000) -> list[str]:
+    chunks: list[str] = []
+    while len(text) > limit:
+        cut = text.rfind("\n", 0, limit)
+        if cut < limit // 2:
+            cut = text.rfind(" ", 0, limit)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(text[:cut].rstrip())
+        text = text[cut:].lstrip()
+    if text:
+        chunks.append(text)
+    return chunks
+
+
+def ago(seconds: float) -> str:
+    minutes = seconds / 60
+    if minutes < 2:
+        return "just now"
+    for size, unit in ((60 * 24 * 30, "month"), (60 * 24 * 7, "week"), (60 * 24, "day"), (60, "hour"), (1, "minute")):
+        if minutes >= size:
+            count = int(minutes // size)
+            return f"{count} {unit}{'s' if count != 1 else ''} ago"
+    return "just now"
