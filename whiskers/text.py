@@ -135,7 +135,7 @@ def cat_only(text: str) -> str:
             if action and not SPEECH_IN_ACTION.search(action):
                 kept.append(f"*{action}*")
             continue
-        sounds = [token for token in part.split() if _is_cat_token(token)]
+        sounds = [token.strip("*_") for token in part.split() if _is_cat_token(token)]
         if sounds:
             kept.append(" ".join(sounds))
     result = " ".join(kept)
@@ -144,6 +144,14 @@ def cat_only(text: str) -> str:
         if result.count("*") % 2:
             result += "*"
     return result
+
+
+def as_stage_directions(text: str) -> str:
+    """Inside *actions*, "my"/"myself" become "its"/"itself": *flops onto my back* -> *flops onto its back*."""
+    def fix(match: re.Match) -> str:
+        action = re.sub(r"\bmyself\b", "itself", match.group(0))
+        return re.sub(r"\b[Mm]y\b", "its", action)
+    return re.sub(r"\*[^*\n]+\*", fix, text)
 
 
 def _json_string_field(text: str, field: str) -> str | None:

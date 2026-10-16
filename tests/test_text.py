@@ -83,3 +83,12 @@ def test_person_name_turns_decorated_display_names_into_names():
     assert person_name("~*Lily*~") == "Lily"
     assert person_name("💀💀", "skull_guy") == "skull guy"
     assert person_name("怠竜 Tearyū") == "怠竜 Tearyū"
+
+
+def test_stray_asterisks_and_first_person_actions_are_tidied():
+    from whiskers.text import as_stage_directions, cat_only
+
+    assert cat_only("*glares up at Angel* MEOW*") == "*glares up at Angel* MEOW"
+    assert as_stage_directions("*flops onto my back, hiding my face* mrrp *grooms myself*") == (
+        "*flops onto its back, hiding its face* mrrp *grooms itself*")
+    assert as_stage_directions("my *naps*") == "my *naps*"  # only inside actions

@@ -21,7 +21,7 @@ from .prompts import (
     reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
 )
 from .scheduler import Scheduler
-from .text import ago, cat_only, clean_reply, keywords, parse_reply, repeated_actions
+from .text import ago, as_stage_directions, cat_only, clean_reply, keywords, parse_reply, repeated_actions
 
 log = logging.getLogger("whiskers.brain")
 
@@ -390,7 +390,7 @@ class Brain:
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
             log.debug("Scene in %s: %s", msg.channel_id, scene)
-        text = clean_reply(reply, self.name, names)
+        text = as_stage_directions(clean_reply(reply, self.name, names))
         if not journal.can_speak:
             text = cat_only(text)
         return text or self.rng.choice(FALLBACK_ACTIONS)
