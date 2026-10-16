@@ -41,7 +41,7 @@ FALLBACK_ACTIONS = [
 ]
 # DRY sampling stops a model from repeating the same phrases message after message (llama.cpp only).
 ANTI_REPEAT = {"dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2, "dry_penalty_last_n": 1024}
-HISTORY_CHAR_BUDGET = 6000
+HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usually runs out first
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
