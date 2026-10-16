@@ -18,9 +18,9 @@ def test_settings_and_channel_rules(tmp_path):
     async def go():
         db = await open_db(tmp_path)
         assert (await db.guild_settings(1)).mode == "allowlist"
-        await db.update_guild_settings(1, mode="everywhere", chattiness=20)
+        await db.update_guild_settings(1, mode="everywhere", chattiness=20, owner_id=42)
         settings = await db.guild_settings(1)
-        assert (settings.mode, settings.chattiness) == ("everywhere", 20)
+        assert (settings.mode, settings.chattiness, settings.owner_id) == ("everywhere", 20, 42)
 
         await db.set_channel_rule(1, 10, rule="allow")
         await db.set_channel_rule(1, 10, chattiness=50)  # keeps the rule
@@ -121,6 +121,10 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
                 "DEFAULT 1, updated_at REAL NOT NULL, since_reflection INTEGER NOT NULL DEFAULT 0, "
                 "reflected_at REAL NOT NULL DEFAULT 0)")
     old.execute("INSERT INTO journal (guild_id, text, updated_at) VALUES (1, '- old', 5)")
+    old.execute("CREATE TABLE guild_settings (guild_id INTEGER PRIMARY KEY, mode TEXT NOT NULL DEFAULT 'allowlist', "
+                "chattiness INTEGER NOT NULL DEFAULT 5, reactions INTEGER NOT NULL DEFAULT 1, name_trigger INTEGER "
+                "NOT NULL DEFAULT 1, ping_on_reply INTEGER NOT NULL DEFAULT 0)")
+    old.execute("INSERT INTO guild_settings (guild_id, chattiness) VALUES (1, 12)")
     old.commit()
     old.close()
 
@@ -129,6 +133,8 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
         journal = await db.journal(1)
         assert (journal.text, journal.can_speak, journal.reflections) == ("- old", False, 0)
         assert journal.born_at > 0
+        settings = await db.guild_settings(1)
+        assert (settings.chattiness, settings.owner_id) == (12, 0)
         await db.close()
 
     run(go())

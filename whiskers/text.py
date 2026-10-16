@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
 WORD = re.compile(r"[a-z0-9']{3,}")
@@ -100,12 +99,12 @@ def ago(seconds: float) -> str:
 def _is_cat_token(token: str) -> bool:
     letters = re.sub(r"[^A-Za-z-]", "", token)
     if not letters.strip("-"):
-        return any(unicodedata.category(ch) == "So" for ch in token)  # emoji
+        return False  # punctuation or emoji on their own; small models scatter emoji everywhere
     return all(CAT_SOUND.match(part) for part in letters.split("-") if part)
 
 
 def cat_only(text: str) -> str:
-    """Keep only what a cat that can't talk could do: *actions*, cat sounds and emoji.
+    """Keep only what a cat that can't talk could do: *actions* and cat sounds.
 
     Small models drift into human words even when told not to, so this is enforced here instead of
     trusting the prompt. Returns "" if nothing cat-like is left.

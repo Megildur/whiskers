@@ -157,11 +157,21 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
         now=3 * 86400.0,
     )
     assert notes[0].startswith("It's Sunday night")
-    assert "Alice: they're a friend. works night shifts." in notes
+    assert "Alice: a good friend you trust. works night shifts." in notes
     assert notes[2] == "You remember (3 days ago): Alice gave Whiskers a laser pointer."
-    assert notes[-1] == "user1 is talking to you. React the way a cat would, with no words."
+    assert notes[-1] == 'user1 just said or did: "whiskers". React to exactly that, the way a cat would, with no words.'
     talking = brain.notes(incoming("whiskers"), "direct", [], [], can_speak=True)
-    assert talking[-1] == "user1 is talking to you. Answer them as Whiskers."
+    assert talking[-1] == 'user1 just said or did: "whiskers". Answer them as Whiskers.'
+
+
+def test_whiskers_adores_its_human_and_warms_up_to_others(cfg):
+    from whiskers.db import Profile
+
+    brain = make_brain(cfg)
+    msg = incoming("*pets the kitty*", author=1, owner_id=1)
+    notes = brain.notes(msg, "direct", [Profile(1, "Brandon", chats=0), Profile(2, "Angel", chats=0)], [])
+    assert "Brandon: your human, the person you love most in the world." in notes
+    assert any(n.startswith("Angel: new to you") and "friendly" in n for n in notes)
 
 
 # ---- speaking: just a cat until the server teaches it ----
@@ -200,6 +210,13 @@ def test_a_cat_that_cant_talk_has_its_words_removed(cfg, tmp_path):
 
         await brain.db.set_can_speak(1, True)
         assert await brain._compose(msg, "direct") == "*tilts head* Mrrp? Huh. You're new. Do you have food?"
+
+        owner_msg = incoming("*kicks you out the window*", author=8, message_id=600, owner_id=8)
+        await brain.observe(owner_msg, GuildSettings(), 0)
+        await brain._compose(owner_msg, "direct")
+        system = brain.llm.calls[-1][0][0]["content"]
+        assert "user8 is your human" in system
+        assert brain.llm.calls[-1][1]["extra"]["dry_multiplier"] > 0  # anti-repetition sampling
         await brain.db.close()
 
     asyncio.run(go())

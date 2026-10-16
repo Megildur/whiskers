@@ -13,36 +13,54 @@ load_dotenv(ROOT / ".env")
 
 @dataclass(frozen=True)
 class ModelPreset:
-    repo: str
+    repos: tuple[str, ...]  # Hugging Face repos to try in order (mirrors in case one disappears)
     quant: str
     fallback_file: str
     size_gb: float
     note: str
     thinking: bool = False  # the model has a "thinking" mode that must be switched off for chat
+    # Mistral's chat template moves the system prompt next to the newest message, which would make the
+    # engine re-read the whole personality for every reply. Sending it at the start of the chat avoids that.
+    system_in_first_turn: bool = False
+    temperature: float = 0.85
 
 
 # Every preset is a GGUF on Hugging Face. The exact file is looked up by quant name at download time;
 # fallback_file is only used if that lookup fails.
 MODEL_PRESETS: dict[str, ModelPreset] = {
+    "nemo-12b": ModelPreset(
+        ("bartowski/Mistral-Nemo-Instruct-2407-GGUF", "QuantFactory/Mistral-Nemo-Instruct-2407-GGUF"),
+        "Q4_K_M", "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf", 7.5,
+        "Best at roleplay and following the conversation. Needs about 10 GB of RAM; replies take ~3x longer "
+        "than qwen3-4b.",
+        system_in_first_turn=True, temperature=0.75,
+    ),
+    "llama3.1-8b": ModelPreset(
+        ("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"),
+        "Q4_K_M", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", 4.9,
+        "Good roleplay and context, faster than nemo-12b. Needs about 7 GB of RAM; replies take ~2x longer "
+        "than qwen3-4b.",
+        temperature=0.8,
+    ),
     "qwen3-4b": ModelPreset(
-        "unsloth/Qwen3-4B-Instruct-2507-GGUF", "Q4_K_M", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2.5,
-        "Best balance of personality and memory skills. Needs about 4 GB of RAM.",
+        ("unsloth/Qwen3-4B-Instruct-2507-GGUF",), "Q4_K_M", "Qwen3-4B-Instruct-2507-Q4_K_M.gguf", 2.5,
+        "Small and quick, for servers with 4-8 GB of RAM. Weaker at roleplay.",
     ),
     "llama3.2-3b": ModelPreset(
-        "bartowski/Llama-3.2-3B-Instruct-GGUF", "Q4_K_M", "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 2.0,
+        ("bartowski/Llama-3.2-3B-Instruct-GGUF",), "Q4_K_M", "Llama-3.2-3B-Instruct-Q4_K_M.gguf", 2.0,
         "About 25% faster than qwen3-4b, a little less sharp. Needs about 3.5 GB of RAM.",
     ),
     "qwen3.5-4b": ModelPreset(
-        "unsloth/Qwen3.5-4B-GGUF", "Q4_K_M", "Qwen3.5-4B-Q4_K_M.gguf", 2.7,
+        ("unsloth/Qwen3.5-4B-GGUF",), "Q4_K_M", "Qwen3.5-4B-Q4_K_M.gguf", 2.7,
         "Newest small Qwen. Its design caches old chat less well on CPU, so replies can start slower.",
         thinking=True,
     ),
     "gemma3-4b": ModelPreset(
-        "bartowski/google_gemma-3-4b-it-GGUF", "Q4_K_M", "google_gemma-3-4b-it-Q4_K_M.gguf", 2.5,
+        ("bartowski/google_gemma-3-4b-it-GGUF",), "Q4_K_M", "google_gemma-3-4b-it-Q4_K_M.gguf", 2.5,
         "Nice writing style, slower on CPU than the others.",
     ),
     "qwen2.5-1.5b": ModelPreset(
-        "Qwen/Qwen2.5-1.5B-Instruct-GGUF", "Q4_K_M", "qwen2.5-1.5b-instruct-q4_k_m.gguf", 1.1,
+        ("Qwen/Qwen2.5-1.5B-Instruct-GGUF",), "Q4_K_M", "qwen2.5-1.5b-instruct-q4_k_m.gguf", 1.1,
         "Tiny and fast, for servers with 2-3 GB of RAM. Noticeably dumber.",
     ),
 }
@@ -152,7 +170,7 @@ def load_config() -> Config:
         llm_model_name=_str("LLM_MODEL_NAME"),
         llm_api_key=_str("LLM_API_KEY"),
         max_reply_tokens=_int("MAX_REPLY_TOKENS", 200),
-        temperature=_float("TEMPERATURE", 0.85),
+        temperature=_float("TEMPERATURE", MODEL_PRESETS[model].temperature if model in MODEL_PRESETS else 0.85),
         history_messages=max(6, _int("HISTORY_MESSAGES", 24)),
         reflect_every=max(5, _int("REFLECT_EVERY", 25)),
         reflect_min_hours=_float("REFLECT_MIN_HOURS", 2.0),

@@ -63,6 +63,7 @@ class LLMClient:
         stop: list[str] | None = None,
         json_schema: dict | None = None,
         should_stop: Callable[[str], bool] | None = None,
+        extra: dict | None = None,
     ) -> ChatResult:
         """Stream a chat completion. Cancelling the task closes the connection, which stops generation."""
         if not self.engine.ready:
@@ -84,7 +85,7 @@ class LLMClient:
                 "json_schema": {"name": "result", "schema": json_schema, "strict": True},
             }
         if managed:
-            body.update(min_p=0.05, repeat_penalty=1.08, cache_prompt=True)
+            body.update(min_p=0.05, repeat_penalty=1.08, cache_prompt=True, **(extra or {}))
         else:
             body["stream_options"] = {"include_usage": True}
         headers = {"Authorization": f"Bearer {self.cfg.llm_api_key}"} if self.cfg.llm_api_key else {}

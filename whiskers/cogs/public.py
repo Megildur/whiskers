@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ..brain import familiarity
+from ..brain import relationship_label
 from ..ui import ask_to_confirm, embed
 
 if TYPE_CHECKING:
@@ -40,8 +40,11 @@ class Cat(commands.GroupCog, group_name="cat", group_description="Check in on Wh
             await interaction.response.send_message(f"{name} doesn't know you yet. *sniffs your hand*", ephemeral=True)
             return
         memories = await self.bot.db.memories_about(interaction.guild_id, interaction.user.id, 5)
+        settings = await self.bot.db.guild_settings(interaction.guild_id)
+        is_owner = interaction.user.id == (settings.owner_id or interaction.guild.owner_id)
         result = embed(f"What {name} remembers about you",
-                       f"You've talked {profile.chats} times; {familiarity(profile.chats)}.")
+                       f"You've talked {profile.chats} times. To {name}, you're "
+                       f"{relationship_label(profile.chats, is_owner)}.")
         result.add_field(name="Things it knows", value="\n".join(f"- {f}" for f in profile.facts) or "nothing yet",
                          inline=False)
         if memories:

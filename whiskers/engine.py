@@ -438,9 +438,23 @@ class ManagedEngine(Engine):
             return path
         log.info("Downloading the %s model (about %.1f GB). This happens once.", cfg.model, preset.size_gb)
         async with aiohttp.ClientSession(trust_env=True) as session:
-            filename = await self._find_hf_file(session, preset.repo, preset.quant, headers) or preset.fallback_file
-            url = f"{HF_BASE}/{preset.repo}/resolve/main/{quote(filename)}?download=true"
-            await self._download(session, url, path, "model", headers=headers, expected=int(preset.size_gb * GB))
+            sources = []
+            for repo in preset.repos:
+                filename = await self._find_hf_file(session, repo, preset.quant, headers)
+                if filename:
+                    sources.insert(0, (repo, filename))  # a file we've seen listed beats a guessed name
+                    break
+                sources.append((repo, preset.fallback_file))
+            for i, (repo, filename) in enumerate(sources):
+                url = f"{HF_BASE}/{repo}/resolve/main/{quote(filename)}?download=true"
+                try:
+                    await self._download(session, url, path, "model", headers=headers,
+                                         expected=int(preset.size_gb * GB))
+                    break
+                except EngineError as error:
+                    if i == len(sources) - 1 or "wasn't found" not in str(error):
+                        raise
+                    log.warning("%s; trying another download source.", error)
         return path
 
     async def _find_hf_file(self, session: aiohttp.ClientSession, repo: str, quant: str, headers: dict) -> str | None:

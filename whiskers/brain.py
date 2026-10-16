@@ -39,6 +39,8 @@ RANDOM_REACTIONS = ["🐾", "👀", "😺"]
 FALLBACK_ACTIONS = [
     "*stares at you, then slowly blinks*", "*flicks tail*", "mrrp?", "*yawns and stretches*", "*tilts head*",
 ]
+# DRY sampling stops a model from repeating the same phrases message after message (llama.cpp only).
+ANTI_REPEAT = {"dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2, "dry_penalty_last_n": 1024}
 HISTORY_CHAR_BUDGET = 6000
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
@@ -57,6 +59,7 @@ class Incoming:
     mentions_me: bool = False
     replies_to_me: bool = False
     is_dm: bool = False
+    owner_id: int = 0  # Whiskers' human in this server
 
 
 @dataclass
@@ -98,16 +101,34 @@ def chattiness_for(settings: GuildSettings, rules: dict[int, ChannelRule], chain
     return settings.chattiness
 
 
-def familiarity(chats: int) -> str:
+def relationship(chats: int, is_owner: bool = False) -> str:
+    """How Whiskers feels about someone, for the model's notes."""
+    if is_owner:
+        return "your human, the person you love most in the world"
     if chats <= 1:
-        return "you've only just met"
+        return "new to you: you're curious about them and a little shy, but friendly"
     if chats < 6:
-        return "you barely know them"
+        return "you're getting to know them and starting to like them"
     if chats < 25:
-        return "you know them a bit"
+        return "you like them and are happy to see them"
     if chats < 100:
-        return "they're a friend"
-    return "one of your favourite humans"
+        return "a good friend you trust"
+    return "one of your favourite people"
+
+
+def relationship_label(chats: int, is_owner: bool = False) -> str:
+    """The same, said about Whiskers to the person themselves."""
+    if is_owner:
+        return "its human"
+    if chats <= 1:
+        return "someone new"
+    if chats < 6:
+        return "someone it's getting to know"
+    if chats < 25:
+        return "a friend"
+    if chats < 100:
+        return "a good friend"
+    return "one of its favourite people"
 
 
 class Brain:
@@ -126,6 +147,7 @@ class Brain:
         self._last_spoke: dict[int, float] = {}
         self._last_spoke_to: dict[tuple[int, int], float] = {}
         self._last_message: dict[int, int] = {}
+        self._owners: dict[int, int] = {}  # guild -> Whiskers' human
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -145,6 +167,8 @@ class Brain:
         await self.db.add_message(msg.guild_id, msg.channel_id, msg.message_id, msg.author_id, msg.author_name,
                                   msg.content, msg.created_at)
         self._last_message[msg.channel_id] = msg.message_id
+        if msg.owner_id:
+            self._owners[msg.guild_id] = msg.owner_id
         decision = self.decide(msg, settings, chattiness)
         await self.db.touch_profile(msg.guild_id, msg.author_id, msg.author_name, chatted=decision.reply == "direct")
         return decision
@@ -289,20 +313,27 @@ class Brain:
             part = "night"
         notes = [f"It's {local:%A} {part} ({local:%I:%M %p}).".replace("(0", "(")]
         for profile in profiles:
-            line = f"{profile.name}: {familiarity(profile.chats)}."
+            line = f"{profile.name}: {relationship(profile.chats, profile.user_id == msg.owner_id)}."
             if profile.facts:
                 line += " " + "; ".join(profile.facts[-6:]) + "."
             notes.append(line)
         for memory in memories:
             notes.append(f"You remember ({ago(now - memory.created_at)}): {memory.content}")
+        latest = msg.content if len(msg.content) <= 300 else msg.content[:300] + "..."
         if kind == "direct" and can_speak:
-            notes.append(f"{msg.author_name} is talking to you. Answer them as {self.name}.")
+            notes.append(f'{msg.author_name} just said or did: "{latest}". Answer them as {self.name}.')
         elif kind == "direct":
-            notes.append(f"{msg.author_name} is talking to you. React the way a cat would, with no words.")
+            notes.append(f'{msg.author_name} just said or did: "{latest}". React to exactly that, the way a cat '
+                         "would, with no words.")
         else:
-            notes.append(f"Nobody called you, but {msg.author_name}'s message caught your attention. "
+            notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                          "Join in the way a cat would.")
         return notes
+
+    async def _owner_name(self, guild_id: int) -> str | None:
+        owner_id = self._owners.get(guild_id)
+        profile = await self.db.profile(guild_id, owner_id) if owner_id else None
+        return profile.name if profile else None
 
     def as_cat(self, rows: list[StoredMessage]) -> list[StoredMessage]:
         """Whiskers' own past messages with any human words removed, so old slips don't encourage new ones."""
@@ -326,15 +357,18 @@ class Brain:
             if all(m.id != memory.id for m in memories):
                 memories.append(memory)
 
-        system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak)
+        owner = await self._owner_name(msg.guild_id)
+        system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak, owner)
         notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak)
-        messages = reply_messages(system, rows, notes, self.name)
+        preset = self.cfg.preset if self.cfg.llm_backend == "managed" else None
+        messages = reply_messages(system, rows, notes, self.name,
+                                  system_in_first_turn=bool(preset and preset.system_in_first_turn))
 
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
         stops = [f"\n{n}:" for n in names][:12] + ["\n" + NOTES_HEADER.format(name=self.name)[:12]]
         result = await self.llm.chat(
             messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature, stop=stops,
-            should_stop=lambda text: any(s in text for s in stops),
+            should_stop=lambda text: any(s in text for s in stops), extra=ANTI_REPEAT,
         )
         self.llm.last_reply_seconds = result.seconds
         text = clean_reply(result.text, self.name, names)
@@ -406,7 +440,8 @@ class Brain:
             rows = self.as_cat(rows)
         result = await self.llm.chat(
             reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000),
-                                can_speak=journal.can_speak, may_learn=may_learn),
+                                can_speak=journal.can_speak, may_learn=may_learn,
+                                owner=await self._owner_name(guild_id)),
             max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn),
         )
         data = parse_json(result.text)

@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     chattiness INTEGER NOT NULL DEFAULT 5,
     reactions INTEGER NOT NULL DEFAULT 1,
     name_trigger INTEGER NOT NULL DEFAULT 1,
-    ping_on_reply INTEGER NOT NULL DEFAULT 0
+    ping_on_reply INTEGER NOT NULL DEFAULT 0,
+    owner_id INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS channel_rules (
     guild_id INTEGER NOT NULL,
@@ -97,10 +98,15 @@ CREATE TABLE IF NOT EXISTS journal_history (
 """
 
 # Columns added after the first release; older databases get them on startup.
-JOURNAL_COLUMNS = {
-    "can_speak": "INTEGER NOT NULL DEFAULT 0",
-    "reflections": "INTEGER NOT NULL DEFAULT 0",
-    "born_at": "REAL NOT NULL DEFAULT 0",
+ADDED_COLUMNS = {
+    "journal": {
+        "can_speak": "INTEGER NOT NULL DEFAULT 0",
+        "reflections": "INTEGER NOT NULL DEFAULT 0",
+        "born_at": "REAL NOT NULL DEFAULT 0",
+    },
+    "guild_settings": {
+        "owner_id": "INTEGER NOT NULL DEFAULT 0",
+    },
 }
 
 FTS_SCHEMA = """
@@ -118,7 +124,7 @@ def default_journal(name: str) -> str:
     return (
         f"- I'm {name}, a cat. I just moved into this Discord server.\n"
         "- I can't talk. I meow, purr, hiss and do cat things.\n"
-        "- I don't know anyone here yet."
+        "- My human is my favourite person. Everyone else, I'm still getting to know."
     )
 
 
@@ -129,6 +135,7 @@ class GuildSettings:
     reactions: bool = True
     name_trigger: bool = True  # saying the cat's name counts as talking to it
     ping_on_reply: bool = False
+    owner_id: int = 0  # Whiskers' human; 0 means the server owner
 
 
 @dataclass
@@ -219,11 +226,12 @@ class Database:
         await self._conn.commit()
 
     async def _migrate(self) -> None:
-        async with self.conn.execute("PRAGMA table_info(journal)") as cur:
-            existing = {row[1] for row in await cur.fetchall()}
-        for column, definition in JOURNAL_COLUMNS.items():
-            if column not in existing:
-                await self.conn.execute(f"ALTER TABLE journal ADD COLUMN {column} {definition}")
+        for table, columns in ADDED_COLUMNS.items():
+            async with self.conn.execute(f"PRAGMA table_info({table})") as cur:
+                existing = {row[1] for row in await cur.fetchall()}
+            for column, definition in columns.items():
+                if column not in existing:
+                    await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         await self.conn.execute("UPDATE journal SET born_at = ? WHERE born_at = 0", (time.time(),))
 
     async def close(self) -> None:
@@ -240,13 +248,14 @@ class Database:
         async with self.conn.execute("SELECT * FROM guild_settings WHERE guild_id = ?", (guild_id,)) as cur:
             row = await cur.fetchone()
         settings = GuildSettings() if row is None else GuildSettings(
-            row["mode"], row["chattiness"], bool(row["reactions"]), bool(row["name_trigger"]), bool(row["ping_on_reply"]),
+            row["mode"], row["chattiness"], bool(row["reactions"]), bool(row["name_trigger"]),
+            bool(row["ping_on_reply"]), row["owner_id"],
         )
         self._settings[guild_id] = settings
         return settings
 
     async def update_guild_settings(self, guild_id: int, **changes) -> GuildSettings:
-        allowed = {"mode", "chattiness", "reactions", "name_trigger", "ping_on_reply"}
+        allowed = {"mode", "chattiness", "reactions", "name_trigger", "ping_on_reply", "owner_id"}
         if set(changes) - allowed:
             raise ValueError(f"unknown settings: {set(changes) - allowed}")
         await self.conn.execute("INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)", (guild_id,))

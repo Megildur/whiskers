@@ -60,3 +60,19 @@ def test_journal_from_lines_normalises_bullets():
     assert journal_from_lines(["- I'm Whiskers.", "* I nap a lot", "", "I love tuna"]) == (
         "- I'm Whiskers.\n- I nap a lot\n- I love tuna")
     assert journal_from_lines(["only one"]) is None
+
+
+def test_mistral_models_get_the_personality_at_the_start_of_the_chat():
+    # Their template would otherwise move the system prompt next to the newest message every time.
+    rows = [msg(1, "Alice", "hi"), msg(2, "Whiskers", "*purrs*", is_self=True), msg(3, "Alice", "*pets you*")]
+    messages = reply_messages("SYSTEM", rows, ["note"], "Whiskers", system_in_first_turn=True)
+    assert [m["role"] for m in messages] == ["user", "assistant", "user"]
+    assert messages[0]["content"].startswith("SYSTEM\n\n---\n\nAlice: hi")
+    assert messages[-1]["content"].startswith("Alice: *pets you*")
+
+
+def test_system_prompt_names_whiskers_human():
+    from whiskers.prompts import reply_system_prompt
+
+    assert "Brandon is your human" in reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
+    assert "The person who owns this server is your human" in reply_system_prompt("P", "- j", "Whiskers", False)

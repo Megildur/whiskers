@@ -47,7 +47,7 @@ def test_cat_only_strips_human_words_but_keeps_actions_and_sounds():
 
     raw = ("*tail flicks lazily, ears perked*\nMrrp... I don't talk. I *meow*. Only when I want food or sun. "
            "*stares at Brandon with one eye* You're not my owner. Mrrp. 🌞")
-    assert cat_only(raw) == "*tail flicks lazily, ears perked* Mrrp... *meow* *stares at Brandon with one eye* Mrrp. 🌞"
+    assert cat_only(raw) == "*tail flicks lazily, ears perked* Mrrp... *meow* *stares at Brandon with one eye* Mrrp."
     assert cat_only("**MEOW!** _sprints over_ purrrr~ mrrp-mrrp") == "MEOW! *sprints over* purrrr~ mrrp-mrrp"
 
 

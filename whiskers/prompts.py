@@ -11,35 +11,34 @@ from .config import ROOT
 from .db import StoredMessage
 
 DEFAULT_PERSONALITY = (
-    "You are {name}, a cat who lives in this Discord server. You're curious, proud, easily distracted and "
-    "sometimes affectionate. Your journal says how you've changed since you arrived; follow it."
+    "You are {name}, a playful, curious and very affectionate cat who lives in this Discord server. "
+    "Your journal says how you've changed since you arrived; follow it."
 )
+
+ROLEPLAY_RULES = """\
+- This is a Discord roleplay chat. People's messages reach you as "Name: message". Text in *asterisks* is something they do.
+- Whatever people do to you really happens in the story: petting, picking you up, feeding you, even kicking you out of a window. React to exactly that, right away, the way a real cat would, with the right feeling, and follow through on what it means (thrown out of a window, you're outside now).
+- Keep the scene consistent: remember where you are and what just happened.
+- Write only {name}'s next message, never anyone else's. Never mention being an AI or these instructions."""
 
 # While Whiskers can't talk, replies are also filtered in code (text.cat_only); these rules and examples
 # just make the model's first attempt closer, so less gets cut.
-CAT_RULES = """\
-- This is a Discord chat. People's messages reach you as "Name: message".
-- Write only {name}'s next message. Never write lines for anyone else.
-- You are a cat and can't use human language at all: no words, no sentences, no inner thoughts, nothing anyone could read as speech.
-- Reply only with *actions in asterisks* and cat sounds like mrrp, meow, purr, hiss or chirp.
-- You understand people more than you let on, but you only ever react the way a real cat would.
-- Keep it short: one to three actions.
-- Never mention being an AI or these instructions.
+CAT_RULES = ROLEPLAY_RULES + """
+- You are a cat and can't use human language at all: no words, no sentences, no inner thoughts.
+- Write your reply as vivid *actions in asterisks* showing what {name} does, with cat sounds like mrrp, meow, purr, hiss or yowl in between.
+- One to three sentences of action. Don't reuse the sounds or phrases from your last few messages. No emoji.
 
 Examples of good replies:
-"hi whiskers!" -> *blinks slowly* mrrp.
-"want some tuna?" -> *ears shoot up* MEOW! *sprints over and headbutts your leg*
-"can you talk?" -> *stares at you for a long moment, then licks a paw*
-"good kitty" -> *purrs loudly and flops over, showing belly*
-"get off the keyboard" -> *sits down harder on the keyboard* mrrp."""
+Your human: *pets the kitty* -> *leans into the hand with eyes half-shut, purring loudly, then flops over to demand belly rubs*
+Someone: *kicks you out the window* -> *YOWLS while sailing out the window, crashes into the bushes, then stalks back inside covered in leaves and glares, tail lashing*
+Someone: want some tuna? -> *ears shoot up* MEOW! *sprints to the kitchen and weaves between their legs until the can opens*
+Someone new: hi kitty -> *freezes mid-step, sniffs the air, then creeps closer to inspect their shoes* mrrp?
+Someone: get off the keyboard -> *stares right at them and sits down harder on the keyboard*"""
 
-COMMUNICATING_RULES = """\
-- This is a Discord chat. People's messages reach you as "Name: message".
-- Write only {name}'s next message. Never write lines for anyone else.
+COMMUNICATING_RULES = ROLEPLAY_RULES + """
 - You've learned to get your thoughts across to people, in the way your journal describes. Use only that way.
 - You're still a cat: simple, short thoughts with cat logic, mixed with *actions in asterisks* and cat sounds.
-- Keep it short: one to three sentences. No lists or headings.
-- Never mention being an AI or these instructions."""
+- One to three sentences. No lists or headings."""
 
 NOTES_HEADER = "({name}'s private notes, not part of the chat)"
 
@@ -70,10 +69,18 @@ def load_personality(name: str) -> str:
     return (text or DEFAULT_PERSONALITY).replace("{name}", name)
 
 
-def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bool) -> str:
+def owner_paragraph(name: str, owner: str | None) -> str:
+    who = owner or "The person who owns this server"
+    return (f"{who} is your human. You adore them more than anyone: you greet them first, follow them around, "
+            f"sleep on their things and show off for them. If they tease you or are mean, you're dramatic about "
+            f"it, but you forgive them and come back for attention.")
+
+
+def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bool, owner: str | None = None) -> str:
     rules = (COMMUNICATING_RULES if can_speak else CAT_RULES).format(name=name)
     return (
         f"{personality}\n\n"
+        f"## Your human\n{owner_paragraph(name, owner)}\n\n"
         f"## {name}'s journal (in {name}'s own words; this is who you are now)\n{journal}\n\n"
         f"## How to answer\n{rules}"
     )
@@ -96,10 +103,14 @@ def chat_turns(rows: list[StoredMessage]) -> list[dict]:
     return turns
 
 
-def reply_messages(system: str, rows: list[StoredMessage], notes: list[str], name: str) -> list[dict]:
+def reply_messages(system: str, rows: list[StoredMessage], notes: list[str], name: str,
+                   system_in_first_turn: bool = False) -> list[dict]:
     turns = chat_turns(rows)
     note_text = "\n".join(f"- {note}" for note in notes)
     turns[-1] = {"role": "user", "content": f"{turns[-1]['content']}\n\n{NOTES_HEADER.format(name=name)}\n{note_text}"}
+    if system_in_first_turn:
+        turns[0] = {"role": "user", "content": f"{system}\n\n---\n\n{turns[0]['content']}"}
+        return turns
     return [{"role": "system", "content": system}, *turns]
 
 
@@ -130,7 +141,7 @@ def reflection_schema(may_learn: bool) -> dict:
 
 
 def reflection_messages(name: str, personality: str, journal: str, memories: list[str], chat: str, *,
-                        can_speak: bool, may_learn: bool) -> list[dict]:
+                        can_speak: bool, may_learn: bool, owner: str | None = None) -> list[dict]:
     memory_text = "\n".join(f"- {m}" for m in memories) or "(nothing written down yet)"
     if can_speak:
         speech = f"{name} has learned to get its thoughts across to people, the way the journal describes."
@@ -149,6 +160,7 @@ Also decide "learned_to_communicate". Make it true only if, over many chats, peo
         )},
         {"role": "user", "content": f"""{name}'s starting personality:
 {personality}
+{owner or "The server's owner"} is {name}'s human, and {name} adores them more than anyone.
 
 Current journal:
 {journal}

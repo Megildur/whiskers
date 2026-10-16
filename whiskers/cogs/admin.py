@@ -163,6 +163,23 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             f"Ping on reply: **{_on(settings.ping_on_reply)}**", ephemeral=True,
         )
 
+    @app_commands.command(name="owner", description="Choose who Whiskers belongs to (default: the server owner)")
+    @app_commands.describe(member="Whiskers' human. Leave empty to see who it is now.")
+    async def owner(self, interaction: discord.Interaction, member: Optional[discord.Member] = None) -> None:
+        if member is not None:
+            if member.bot:
+                await interaction.response.send_message("Whiskers can't belong to a bot.", ephemeral=True)
+                return
+            await self.bot.db.update_guild_settings(interaction.guild_id, owner_id=member.id)
+            await interaction.response.send_message(
+                f"🐾 Whiskers now belongs to {member.mention} and adores them more than anyone.", ephemeral=True,
+            )
+            return
+        settings = await self.bot.db.guild_settings(interaction.guild_id)
+        owner_id = settings.owner_id or interaction.guild.owner_id
+        default = "" if settings.owner_id else " (the server owner, by default)"
+        await interaction.response.send_message(f"Whiskers' human is <@{owner_id}>{default}.", ephemeral=True)
+
     @app_commands.command(name="status", description="Whiskers' settings and how its brain is doing")
     async def status(self, interaction: discord.Interaction) -> None:
         bot = self.bot
@@ -177,6 +194,8 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         if llm.last_reply_seconds:
             brain_lines.append(f"Last reply took {llm.last_reply_seconds:.0f}s")
         brain_lines.append(f"Replies waiting: {bot.scheduler.pending_replies}")
+        settings = await bot.db.guild_settings(interaction.guild_id)
+        result.add_field(name="Human", value=f"<@{settings.owner_id or interaction.guild.owner_id}>", inline=False)
         result.add_field(name="Brain", value="\n".join(brain_lines), inline=False)
         counts = await bot.db.counts(interaction.guild_id)
         journal = await bot.db.journal(interaction.guild_id)

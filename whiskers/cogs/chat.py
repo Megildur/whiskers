@@ -79,6 +79,8 @@ class Chat(commands.Cog):
         incoming = self._incoming(message)
         if incoming is None:
             return
+        if message.guild is not None:
+            incoming.owner_id = settings.owner_id or message.guild.owner_id or 0
         decision = await bot.brain.observe(incoming, settings, chattiness)
         if decision.reaction:
             await self._react(message, decision.reaction)
