@@ -6,6 +6,7 @@ understood. Change the personality or prompts, run the same scenes again and com
 """
 from __future__ import annotations
 
+import asyncio
 import itertools
 import logging
 import random
@@ -61,6 +62,7 @@ FRIEND = (11, "Angel")
 NEWCOMER = (12, "Tearyu")
 
 log = logging.getLogger("whiskers.simulate")
+REPLY_TIMEOUT = 240  # seconds; a normal reply takes well under a minute
 
 
 @dataclass
@@ -94,7 +96,9 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
     await db.connect()
     ids = itertools.count(int(time.time() * 1000) << 22)  # increasing, like Discord message IDs
     lines = [] if lines is None else lines
-    lines += [f"Whiskers simulation · model: {bot.engine.description} · temperature {cfg.temperature}", ""]
+    lines += [f"Whiskers simulation · code {getattr(bot, 'version', 'unknown')} · model: {bot.engine.description} · "
+              f"temperature {cfg.temperature}", ""]
+    log.info("Simulation started: %s", ", ".join(scenes))
     total, done = count_replies(scenes), 0
     try:
         real = await bot.db.journal(guild_id)
@@ -117,7 +121,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 await brain.observe(msg, GuildSettings(), 0)
                 started = time.monotonic()
                 async with bot.scheduler.reply_turn():  # takes turns with real chat
-                    reply = await brain.compose(msg, "direct")
+                    reply = await asyncio.wait_for(brain.compose(msg, "direct"), timeout=REPLY_TIMEOUT)
                 seconds = time.monotonic() - started
                 await brain.record_own_message(msg, next(ids), reply, time.time())
                 note = brain.last_scene(channel_id)

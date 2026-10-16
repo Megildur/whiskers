@@ -14,7 +14,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from .brain import Brain
-from .config import Config
+from .config import Config, code_version
 from .db import Database
 from .engine import create_engine
 from .llm import LLMClient
@@ -52,6 +52,8 @@ class WhiskersBot(commands.Bot):
         """Chat is handled by cogs/chat.py; there are no prefix commands."""
 
     async def setup_hook(self) -> None:
+        self.version = code_version()
+        log.info("Whiskers code version: %s", self.version)
         await self.db.connect()
         await self.engine.start()  # downloads and loads in the background; the bot comes online meanwhile
         for extension in EXTENSIONS:

@@ -67,6 +67,20 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
 DEFAULT_MODEL = "qwen3-4b"
 
 
+def code_version() -> str:
+    """The git commit this copy is running, like "aedf6d1 (Oct 16 22:40)", or "unknown"."""
+    import subprocess
+
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(ROOT), "log", "-1", "--format=%h (%cd)", "--date=format:%b %d %H:%M"],
+            capture_output=True, text=True, timeout=10,
+        )
+        return result.stdout.strip() or "unknown"
+    except (OSError, subprocess.TimeoutExpired):
+        return "unknown"
+
+
 def _str(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 

@@ -1,6 +1,7 @@
 """/whiskers: server setup for people with Manage Server."""
 from __future__ import annotations
 
+import asyncio
 import io
 import logging
 import time
@@ -54,6 +55,18 @@ class SimulationProgress:
         self.started = time.monotonic()
         self.last: Step | None = None
         self.channel_message: discord.Message | None = None
+        self.reply_started = time.monotonic()
+        self.finished = False
+        self._ticker: asyncio.Task | None = None
+
+    def start(self) -> None:
+        """Refresh the message every 15 seconds while a reply is being written, so it's clearly alive."""
+        async def tick() -> None:
+            while not self.finished:
+                await asyncio.sleep(15)
+                if not self.finished:
+                    await self._show(self.text())
+        self._ticker = asyncio.create_task(tick())
 
     def elapsed(self) -> float:
         return time.monotonic() - self.started
@@ -71,6 +84,8 @@ class SimulationProgress:
             else:
                 eta = " · warming up"
             headline += f"\n`{bar}` {self.done}/{self.total} replies{eta}"
+            waited = time.monotonic() - self.reply_started
+            headline += f"\n⏳ writing reply {self.done + 1}/{self.total}… {waited:.0f}s"
         parts = [headline]
         if self.last:
             parts.append(
@@ -93,9 +108,13 @@ class SimulationProgress:
 
     async def update(self, step: Step) -> None:
         self.done, self.last = step.done, step
+        self.reply_started = time.monotonic()
         await self._show(self.text())
 
     async def finish(self, headline: str, lines: list[str]) -> None:
+        self.finished = True
+        if self._ticker:
+            self._ticker.cancel()
         await self._show(self.text(headline))
         if not lines:
             return
@@ -300,6 +319,7 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             f"Journal version {journal.version} (`/cat journal` to read it)\n"
             f"Speech: {SPEECH_NAMES[journal.can_speak]}"
         ), inline=False)
+        result.set_footer(text=f"Code version {getattr(bot, 'version', 'unknown')}")
         await interaction.response.send_message(embed=result, ephemeral=True)
 
     @app_commands.command(name="simulate", description="Play test scenes with Whiskers and post the transcript")
@@ -318,6 +338,7 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         scenes = [scene.value] if scene else list(SCENES)
         progress = SimulationProgress(interaction, count_replies(scenes), len(scenes))
         await interaction.response.send_message(progress.text())
+        progress.start()
         lines: list[str] = []
         self._simulating = True
         try:
@@ -326,8 +347,10 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
                              on_step=progress.update, lines=lines)
         except Exception as error:  # share whatever was played, then report what went wrong
             log.exception("Simulation failed")
+            reason = ("a reply took longer than 4 minutes, so the AI engine looks stuck"
+                      if isinstance(error, asyncio.TimeoutError) else str(error)[:300] or type(error).__name__)
             await progress.finish(f"⚠️ **Simulation stopped** after {progress.done} of {progress.total} replies: "
-                                  f"{str(error)[:300]}", lines)
+                                  f"{reason}", lines)
         else:
             await progress.finish(f"✅ **Simulation finished**: {progress.total} replies in "
                                   f"{_duration(progress.elapsed())}.", lines)

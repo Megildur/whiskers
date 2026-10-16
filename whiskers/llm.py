@@ -94,8 +94,9 @@ class LLMClient:
         parts: list[str] = []
         tokens = 0
         timings: dict = {}
-        # CPU prompt processing can take minutes for a long uncached prompt, so be patient before the first token.
-        timeout = aiohttp.ClientTimeout(total=900, sock_connect=10, sock_read=600)
+        # CPU prompt processing can take a few minutes for a long uncached prompt, so be patient before the
+        # first token, but don't let one stuck request hold up everyone for long.
+        timeout = aiohttp.ClientTimeout(total=600, sock_connect=10, sock_read=300)
         try:
             async with self._get_session().post(
                 f"{self.engine.base_url}/chat/completions", json=body, headers=headers, timeout=timeout,

@@ -91,3 +91,33 @@ def test_simulate_command_posts_public_progress_and_the_transcript(cfg, tmp_path
         await db.close()
 
     asyncio.run(go())
+
+
+def test_a_stuck_reply_stops_the_simulation_with_a_clear_message(cfg, tmp_path, monkeypatch):
+    from whiskers import simulate
+    from whiskers.cogs.admin import Admin
+
+    class StuckAfterTwo(FakeLLM):
+        async def chat(self, messages, **kwargs):
+            if self.calls >= 2:
+                await asyncio.sleep(60)
+            return await super().chat(messages, **kwargs)
+
+    monkeypatch.setattr(simulate, "REPLY_TIMEOUT", 0.2)
+
+    async def go():
+        db = Database(tmp_path / "real.db")
+        await db.connect()
+        bot = SimpleNamespace(cfg=cfg, db=db, llm=StuckAfterTwo(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
+                              engine=SimpleNamespace(description="fake", ready=True, status="ready"))
+        cog = Admin.__new__(Admin)
+        cog.bot, cog._simulating = bot, False
+        interaction = FakeInteraction()
+        await Admin.simulate.callback(cog, interaction, None)
+        edits = [entry[1] for entry in interaction.log if entry[0] == "edit"]
+        assert "Simulation stopped** after 2 of" in edits[-1] and "looks stuck" in edits[-1]
+        assert interaction.log[-1][2] == "whiskers-simulation.txt"  # the two finished replies are still shared
+        assert not cog._simulating
+        await db.close()
+
+    asyncio.run(go())
