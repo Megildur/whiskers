@@ -159,4 +159,75 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
     assert notes[0].startswith("It's Sunday night")
     assert "Alice: they're a friend. works night shifts." in notes
     assert notes[2] == "You remember (3 days ago): Alice gave Whiskers a laser pointer."
-    assert notes[-1] == "user1 is talking to you. Answer them as Whiskers."
+    assert notes[-1] == "user1 is talking to you. React the way a cat would, with no words."
+    talking = brain.notes(incoming("whiskers"), "direct", [], [], can_speak=True)
+    assert talking[-1] == "user1 is talking to you. Answer them as Whiskers."
+
+
+# ---- speaking: just a cat until the server teaches it ----
+
+class FakeLLM:
+    def __init__(self, reply):
+        self.reply = reply
+        self.calls = []
+        self.last_reply_seconds = None
+
+    async def chat(self, messages, **kwargs):
+        from whiskers.llm import ChatResult
+
+        self.calls.append((messages, kwargs))
+        return ChatResult(self.reply, 10, 0.1)
+
+
+def brain_with(cfg, tmp_path, reply):
+    from whiskers.db import Database
+
+    return Brain(cfg, db=Database(tmp_path / "brain.db"), llm=FakeLLM(reply), scheduler=Scheduler(),
+                 rng=SilentRandom())
+
+
+def test_a_cat_that_cant_talk_has_its_words_removed(cfg, tmp_path):
+    import asyncio
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, "*tilts head* Mrrp? Huh. You're new. Do you have food?")
+        await brain.db.connect()
+        msg = incoming("hey whiskers", mentions_me=True)
+        await brain.observe(msg, GuildSettings(), 0)
+        assert await brain._compose(msg, "direct") == "*tilts head* Mrrp?"
+        system = brain.llm.calls[-1][0][0]["content"]
+        assert "can't use human language" in system
+
+        await brain.db.set_can_speak(1, True)
+        assert await brain._compose(msg, "direct") == "*tilts head* Mrrp? Huh. You're new. Do you have food?"
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_learning_to_talk_needs_time_and_reflections(cfg, tmp_path):
+    import asyncio
+    import dataclasses
+    import json
+
+    async def go():
+        reply = json.dumps({"journal": ["I'm Whiskers.", "Brandon taught me to share thoughts."],
+                            "learned_to_communicate": True})
+        brain = brain_with(dataclasses.replace(cfg, speech_after_days=7), tmp_path, reply)
+        await brain.db.connect()
+        await brain.db.count_cat_message(1)
+
+        await brain.reflect(1)  # brand-new cat: the model's "true" is ignored and not even asked for
+        assert "learned_to_communicate" not in brain.llm.calls[-1][1]["json_schema"]["properties"]
+        assert not (await brain.db.journal(1)).can_speak
+
+        for _ in range(5):
+            await brain.db.mark_reflected(1)
+        await brain.db.conn.execute("UPDATE journal SET born_at = born_at - 8 * 86400")
+        await brain.reflect(1)  # a week later, after enough reflections, it may learn
+        journal = await brain.db.journal(1)
+        assert journal.can_speak
+        assert journal.text == "- I'm Whiskers.\n- Brandon taught me to share thoughts."
+        await brain.db.close()
+
+    asyncio.run(go())

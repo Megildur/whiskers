@@ -2,10 +2,20 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
 WORD = re.compile(r"[a-z0-9']{3,}")
 SPEAKER_LABEL = re.compile(r"^\**\s*([^\s:*][^:\n*]{0,40}?)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*")
+
+# Sounds a cat can make, stretched any amount: meeeow, mrrrp, purrrr, hsss...
+CAT_SOUND = re.compile(
+    r"^(?:m+e+o+w+|m+e+w+|m+i*a+o+w*|m+r(?:r|p|o+w+)+|p+u*r{2,}[rt]*|h+i*s{2,}|c+h+i*r+p+|t+r+i+l+|"
+    r"n+y+a+n*|y+o+w+l+|r+a+w+r+|b+r{2,}[pt]*|g+r{2,}|m{2,})$",
+    re.I,
+)
+ACTION_OR_PLAIN = re.compile(r"(\*[^*\n]+\*|(?<!\w)_[^_\n]+_(?!\w))")
+SPEECH_IN_ACTION = re.compile(r"[\"“”:]|\b(says?|said|whispers?|speaks?|talks?|thinks?|thoughts?|telepath\w*)\b", re.I)
 
 STOPWORDS = frozenset("""
 the and you your you're for are was were but not with this that have has had what when where who why how
@@ -85,3 +95,38 @@ def ago(seconds: float) -> str:
             count = int(minutes // size)
             return f"{count} {unit}{'s' if count != 1 else ''} ago"
     return "just now"
+
+
+def _is_cat_token(token: str) -> bool:
+    letters = re.sub(r"[^A-Za-z-]", "", token)
+    if not letters.strip("-"):
+        return any(unicodedata.category(ch) == "So" for ch in token)  # emoji
+    return all(CAT_SOUND.match(part) for part in letters.split("-") if part)
+
+
+def cat_only(text: str) -> str:
+    """Keep only what a cat that can't talk could do: *actions*, cat sounds and emoji.
+
+    Small models drift into human words even when told not to, so this is enforced here instead of
+    trusting the prompt. Returns "" if nothing cat-like is left.
+    """
+    text = re.sub(r"\*{2,}", "", text)  # bold markers; single asterisks are actions
+    kept: list[str] = []
+    for part in ACTION_OR_PLAIN.split(text):
+        part = part.strip()
+        if not part:
+            continue
+        if part[0] in "*_" and part[-1] == part[0] and len(part) > 2:
+            action = " ".join(part[1:-1].split())
+            if action and not SPEECH_IN_ACTION.search(action):
+                kept.append(f"*{action}*")
+            continue
+        sounds = [token for token in part.split() if _is_cat_token(token)]
+        if sounds:
+            kept.append(" ".join(sounds))
+    result = " ".join(kept)
+    if len(result) > 400:
+        result = result[:400].rsplit("*", 1)[0].rstrip()
+        if result.count("*") % 2:
+            result += "*"
+    return result

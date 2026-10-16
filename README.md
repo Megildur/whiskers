@@ -85,6 +85,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
+| `/whiskers personality speech` | Manage Server | Just a cat (meows and actions only), or able to communicate. |
 | `/whiskers personality undo` / `reset` | Manage Server | Go back one journal version, or back to an ordinary cat. |
 | `/whiskers memory forget <member>` / `wipe` | Manage Server | Forget one person, or everything in this server. |
 | `/cat journal` | Everyone | Read Whiskers' journal. |
@@ -106,9 +107,17 @@ Server admins can change who sees the `/whiskers` commands in **Server Settings 
 Whiskers' personality has two layers:
 
 1. **`personality.txt`**: the starting personality, an ordinary cat. Edit it if you want a different starting point.
-2. **The journal**: a short list in Whiskers' own words about who it is now. It starts as "I'm Whiskers, a cat. I can't talk." After every 25 messages Whiskers sends (and at most once every 2 hours), while nobody is waiting for a reply, it rereads recent chats and its memories and updates the journal a little. New habits, favourite people, nicknames and running jokes show up there. Unusual abilities, like understanding words, talking through thoughts or superpowers, only appear once the server has built toward them over time.
+2. **The journal**: a short list in Whiskers' own words about who it is now. It starts as "I'm Whiskers, a cat. I can't talk." After every 25 messages Whiskers sends (and at most once every 2 hours), while nobody is waiting for a reply, it rereads recent chats and its memories and updates the journal a little. New habits, favourite people, nicknames and running jokes show up there. Unusual abilities like superpowers only appear once the server has built toward them over time.
 
 The journal is the truth for Whiskers: whatever it says, Whiskers does. You can steer it with `/whiskers personality edit`, roll back a change you don't like with `undo`, or start over with `reset`. Each server has its own Whiskers.
+
+### Learning to talk
+
+Whiskers starts as just a cat. Its replies are only *actions* and cat sounds (mrrp, meow, purr, hiss) and emoji. Small models slip into English even when told not to, so any human words are also removed from its replies before they're sent.
+
+It can learn to communicate, the way your old cat started talking through thoughts. That only becomes possible after Whiskers has been in the server for a week (`SPEECH_AFTER_DAYS` in `.env`) and has updated its journal at least 5 times. From then on, each journal update checks whether people have kept teaching or encouraging it to talk. Once they have, Whiskers learns to get simple thoughts across, and the journal says how.
+
+You can also decide yourself with `/whiskers personality speech`: lock it back to just a cat, or let it communicate right away. `reset` makes it an ordinary cat that can't talk again. `/cat journal` and `/whiskers status` show which stage it's at.
 
 ## What it remembers
 

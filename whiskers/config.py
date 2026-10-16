@@ -109,6 +109,7 @@ class Config:
     history_messages: int
     reflect_every: int
     reflect_min_hours: float
+    speech_after_days: float
     max_queue: int
 
     data_dir: Path
@@ -155,6 +156,7 @@ def load_config() -> Config:
         history_messages=max(6, _int("HISTORY_MESSAGES", 24)),
         reflect_every=max(5, _int("REFLECT_EVERY", 25)),
         reflect_min_hours=_float("REFLECT_MIN_HOURS", 2.0),
+        speech_after_days=_float("SPEECH_AFTER_DAYS", 7.0),
         max_queue=max(1, _int("MAX_QUEUE", 6)),
         data_dir=data_dir,
         engine_dir=ROOT / "engine",

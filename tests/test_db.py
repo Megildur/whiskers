@@ -111,3 +111,38 @@ def test_summary_batches_busy_or_quiet_channels(tmp_path):
         await db.close()
 
     run(go())
+
+
+def test_old_databases_get_the_new_journal_columns(tmp_path):
+    import sqlite3
+
+    old = sqlite3.connect(tmp_path / "test.db")
+    old.execute("CREATE TABLE journal (guild_id INTEGER PRIMARY KEY, text TEXT NOT NULL, version INTEGER NOT NULL "
+                "DEFAULT 1, updated_at REAL NOT NULL, since_reflection INTEGER NOT NULL DEFAULT 0, "
+                "reflected_at REAL NOT NULL DEFAULT 0)")
+    old.execute("INSERT INTO journal (guild_id, text, updated_at) VALUES (1, '- old', 5)")
+    old.commit()
+    old.close()
+
+    async def go():
+        db = await open_db(tmp_path)
+        journal = await db.journal(1)
+        assert (journal.text, journal.can_speak, journal.reflections) == ("- old", False, 0)
+        assert journal.born_at > 0
+        await db.close()
+
+    run(go())
+
+
+def test_speech_switch_and_reset(tmp_path):
+    async def go():
+        db = await open_db(tmp_path)
+        await db.set_can_speak(1, True)
+        assert (await db.journal(1)).can_speak
+        await db.mark_reflected(1)
+        assert (await db.journal(1)).reflections == 1
+        journal = await db.reset_journal(1)
+        assert (journal.can_speak, journal.reflections, journal.text) == (False, 0, default_journal("Whiskers"))
+        await db.close()
+
+    run(go())

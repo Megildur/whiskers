@@ -40,3 +40,20 @@ def test_ago():
     assert ago(30) == "just now"
     assert ago(3 * 3600) == "3 hours ago"
     assert ago(86400) == "1 day ago"
+
+
+def test_cat_only_strips_human_words_but_keeps_actions_and_sounds():
+    from whiskers.text import cat_only
+
+    raw = ("*tail flicks lazily, ears perked*\nMrrp... I don't talk. I *meow*. Only when I want food or sun. "
+           "*stares at Brandon with one eye* You're not my owner. Mrrp. 🌞")
+    assert cat_only(raw) == "*tail flicks lazily, ears perked* Mrrp... *meow* *stares at Brandon with one eye* Mrrp. 🌞"
+    assert cat_only("**MEOW!** _sprints over_ purrrr~ mrrp-mrrp") == "MEOW! *sprints over* purrrr~ mrrp-mrrp"
+
+
+def test_cat_only_drops_speech_hidden_in_actions_and_plain_sentences():
+    from whiskers.text import cat_only
+
+    assert cat_only('*thinks: you are weird* *licks paw* *says "hello"*') == "*licks paw*"
+    assert cat_only("Hello there, I am a cat.") == ""
+    assert cat_only("Mr. Smith is here") == ""

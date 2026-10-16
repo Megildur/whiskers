@@ -17,11 +17,11 @@ from .config import Config
 from .db import ChannelRule, Database, GuildSettings, Memory, Profile, StoredMessage
 from .llm import LLMClient, LLMError, parse_json
 from .prompts import (
-    NOTES_HEADER, SUMMARY_SCHEMA, load_personality, parse_journal, reflection_messages, reply_messages,
-    reply_system_prompt, summary_messages, transcript,
+    NOTES_HEADER, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
+    reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
 )
 from .scheduler import Scheduler
-from .text import ago, clean_reply, keywords
+from .text import ago, cat_only, clean_reply, keywords
 
 log = logging.getLogger("whiskers.brain")
 
@@ -42,6 +42,7 @@ FALLBACK_ACTIONS = [
 HISTORY_CHAR_BUDGET = 6000
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
+SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
 
 
 @dataclass
@@ -274,7 +275,7 @@ class Brain:
         return [replace(row, content=row.content[:MESSAGE_CHAR_LIMIT]) for row in rows]
 
     def notes(self, msg: Incoming, kind: str, profiles: list[Profile], memories: list[Memory],
-              now: float | None = None) -> list[str]:
+              can_speak: bool = False, now: float | None = None) -> list[str]:
         now = time.time() if now is None else now
         local = datetime.fromtimestamp(now, self._tz)
         hour = local.hour
@@ -294,15 +295,24 @@ class Brain:
             notes.append(line)
         for memory in memories:
             notes.append(f"You remember ({ago(now - memory.created_at)}): {memory.content}")
-        if kind == "direct":
+        if kind == "direct" and can_speak:
             notes.append(f"{msg.author_name} is talking to you. Answer them as {self.name}.")
+        elif kind == "direct":
+            notes.append(f"{msg.author_name} is talking to you. React the way a cat would, with no words.")
         else:
             notes.append(f"Nobody called you, but {msg.author_name}'s message caught your attention. "
                          "Join in the way a cat would.")
         return notes
 
+    def as_cat(self, rows: list[StoredMessage]) -> list[StoredMessage]:
+        """Whiskers' own past messages with any human words removed, so old slips don't encourage new ones."""
+        return [replace(r, content=cat_only(r.content) or "*meows*") if r.is_self else r for r in rows]
+
     async def _compose(self, msg: Incoming, kind: str) -> str:
+        journal = await self.db.journal(msg.guild_id)
         rows = self.window(msg.channel_id, await self.db.recent_messages(msg.channel_id, self.cfg.history_messages))
+        if not journal.can_speak:
+            rows = self.as_cat(rows)
         people = [msg.author_id]
         for row in reversed(rows[-10:]):
             if not row.is_self and row.author_id not in people:
@@ -316,9 +326,9 @@ class Brain:
             if all(m.id != memory.id for m in memories):
                 memories.append(memory)
 
-        journal = await self.db.journal(msg.guild_id)
-        system = reply_system_prompt(self.personality, journal.text, self.name)
-        messages = reply_messages(system, rows, self.notes(msg, kind, profiles, memories[:4]), self.name)
+        system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak)
+        notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak)
+        messages = reply_messages(system, rows, notes, self.name)
 
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
         stops = [f"\n{n}:" for n in names][:12] + ["\n" + NOTES_HEADER.format(name=self.name)[:12]]
@@ -327,7 +337,10 @@ class Brain:
             should_stop=lambda text: any(s in text for s in stops),
         )
         self.llm.last_reply_seconds = result.seconds
-        return clean_reply(result.text, self.name, names) or self.rng.choice(FALLBACK_ACTIONS)
+        text = clean_reply(result.text, self.name, names)
+        if not journal.can_speak:
+            text = cat_only(text)
+        return text or self.rng.choice(FALLBACK_ACTIONS)
 
     # ---- background chores: memories and growing up ----
 
@@ -378,20 +391,39 @@ class Brain:
         log.info("Wrote a memory for channel %s: %s", channel_id, summary or "(nothing worth remembering)")
 
     async def reflect(self, guild_id: int, reason: str = "evolved") -> str | None:
-        """Let the server's influence rewrite Whiskers' journal. Returns the new journal, or None."""
+        """Let the server's influence rewrite Whiskers' journal. Returns the new journal, or None.
+
+        Once Whiskers has been around long enough, this is also where it can learn to communicate.
+        """
         journal = await self.db.journal(guild_id)
+        may_learn = (
+            not journal.can_speak and journal.reflections >= SPEECH_MIN_REFLECTIONS and journal.born_at > 0
+            and time.time() - journal.born_at >= self.cfg.speech_after_days * 86400
+        )
         memories = [m.content for m in await self.db.recent_memories(guild_id, 8)]
         rows = await self.db.recent_guild_messages(guild_id, 40)
+        if not journal.can_speak:
+            rows = self.as_cat(rows)
         result = await self.llm.chat(
-            reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000)),
-            max_tokens=450, temperature=0.7,
+            reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000),
+                                can_speak=journal.can_speak, may_learn=may_learn),
+            max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn),
         )
-        new = parse_journal(result.text)
-        if new is None or new.strip() == journal.text.strip():
-            await self.db.mark_reflected(guild_id)
+        data = parse_json(result.text)
+        if data and isinstance(data.get("journal"), list):
+            new = journal_from_lines(data["journal"])
+        else:
+            new = parse_journal(result.text)
+        changed = new is not None and new.strip() != journal.text.strip()
+        if changed:
+            await self.db.set_journal(guild_id, new, reason)
+        await self.db.mark_reflected(guild_id)
+        if may_learn and data and data.get("learned_to_communicate") is True:
+            await self.db.set_can_speak(guild_id, True)
+            log.info("Whiskers has learned to communicate in guild %s.", guild_id)
+        if not changed:
             log.info("Reflection in guild %s changed nothing.", guild_id)
             return None
-        await self.db.set_journal(guild_id, new, reason)
         log.info("Whiskers grew a little in guild %s:\n%s", guild_id, new)
         return new
 

@@ -81,7 +81,10 @@ CREATE TABLE IF NOT EXISTS journal (
     version INTEGER NOT NULL DEFAULT 1,
     updated_at REAL NOT NULL,
     since_reflection INTEGER NOT NULL DEFAULT 0,
-    reflected_at REAL NOT NULL DEFAULT 0
+    reflected_at REAL NOT NULL DEFAULT 0,
+    can_speak INTEGER NOT NULL DEFAULT 0,
+    reflections INTEGER NOT NULL DEFAULT 0,
+    born_at REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS journal_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -92,6 +95,13 @@ CREATE TABLE IF NOT EXISTS journal_history (
     reason TEXT NOT NULL
 );
 """
+
+# Columns added after the first release; older databases get them on startup.
+JOURNAL_COLUMNS = {
+    "can_speak": "INTEGER NOT NULL DEFAULT 0",
+    "reflections": "INTEGER NOT NULL DEFAULT 0",
+    "born_at": "REAL NOT NULL DEFAULT 0",
+}
 
 FTS_SCHEMA = """
 CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5 (content, content='memories', content_rowid='id');
@@ -164,6 +174,9 @@ class Journal:
     updated_at: float
     since_reflection: int = 0
     reflected_at: float = 0.0
+    can_speak: bool = False  # False: only cat sounds and actions, enforced in code
+    reflections: int = 0
+    born_at: float = 0.0  # when Whiskers arrived in this server
 
 
 def _row_message(row) -> StoredMessage:
@@ -197,12 +210,21 @@ class Database:
         await self._conn.execute("PRAGMA journal_mode=WAL")
         await self._conn.execute("PRAGMA foreign_keys=ON")
         await self._conn.executescript(SCHEMA)
+        await self._migrate()
         try:
             await self._conn.executescript(FTS_SCHEMA)
         except aiosqlite.OperationalError as error:
             self.fts = False
             log.warning("SQLite full-text search isn't available (%s); memory search will be simpler.", error)
         await self._conn.commit()
+
+    async def _migrate(self) -> None:
+        async with self.conn.execute("PRAGMA table_info(journal)") as cur:
+            existing = {row[1] for row in await cur.fetchall()}
+        for column, definition in JOURNAL_COLUMNS.items():
+            if column not in existing:
+                await self.conn.execute(f"ALTER TABLE journal ADD COLUMN {column} {definition}")
+        await self.conn.execute("UPDATE journal SET born_at = ? WHERE born_at = 0", (time.time(),))
 
     async def close(self) -> None:
         if self._conn:
@@ -437,7 +459,8 @@ class Database:
             row = await cur.fetchone()
         if row is None:
             return Journal(default_journal(self.bot_name), 1, 0.0)
-        return Journal(row["text"], row["version"], row["updated_at"], row["since_reflection"], row["reflected_at"])
+        return Journal(row["text"], row["version"], row["updated_at"], row["since_reflection"], row["reflected_at"],
+                       bool(row["can_speak"]), row["reflections"], row["born_at"])
 
     async def set_journal(self, guild_id: int, text: str, reason: str) -> Journal:
         current = await self.journal(guild_id)
@@ -447,11 +470,11 @@ class Database:
             (guild_id, current.text, current.version, now, reason),
         )
         await self.conn.execute(
-            "INSERT INTO journal (guild_id, text, version, updated_at, since_reflection, reflected_at) "
-            "VALUES (?, ?, ?, ?, 0, ?) ON CONFLICT (guild_id) DO UPDATE SET text = excluded.text, "
+            "INSERT INTO journal (guild_id, text, version, updated_at, since_reflection, reflected_at, born_at) "
+            "VALUES (?, ?, ?, ?, 0, ?, ?) ON CONFLICT (guild_id) DO UPDATE SET text = excluded.text, "
             "version = excluded.version, updated_at = excluded.updated_at, since_reflection = 0, "
             "reflected_at = excluded.reflected_at",
-            (guild_id, text, current.version + 1, now, now),
+            (guild_id, text, current.version + 1, now, now, now),
         )
         await self.conn.commit()
         return await self.journal(guild_id)
@@ -474,17 +497,36 @@ class Database:
 
     async def count_cat_message(self, guild_id: int) -> None:
         await self.conn.execute(
-            "INSERT INTO journal (guild_id, text, version, updated_at, since_reflection) VALUES (?, ?, 1, ?, 1) "
-            "ON CONFLICT (guild_id) DO UPDATE SET since_reflection = since_reflection + 1",
-            (guild_id, default_journal(self.bot_name), time.time()),
+            "INSERT INTO journal (guild_id, text, version, updated_at, since_reflection, born_at) "
+            "VALUES (?, ?, 1, ?, 1, ?) ON CONFLICT (guild_id) DO UPDATE SET since_reflection = since_reflection + 1",
+            (guild_id, default_journal(self.bot_name), time.time(), time.time()),
         )
         await self.conn.commit()
 
     async def mark_reflected(self, guild_id: int) -> None:
         await self.conn.execute(
-            "UPDATE journal SET since_reflection = 0, reflected_at = ? WHERE guild_id = ?", (time.time(), guild_id)
+            "UPDATE journal SET since_reflection = 0, reflected_at = ?, reflections = reflections + 1 WHERE guild_id = ?",
+            (time.time(), guild_id),
         )
         await self.conn.commit()
+
+    async def set_can_speak(self, guild_id: int, can_speak: bool) -> None:
+        now = time.time()
+        await self.conn.execute(
+            "INSERT OR IGNORE INTO journal (guild_id, text, version, updated_at, born_at) VALUES (?, ?, 1, ?, ?)",
+            (guild_id, default_journal(self.bot_name), now, now),
+        )
+        await self.conn.execute("UPDATE journal SET can_speak = ? WHERE guild_id = ?", (int(can_speak), guild_id))
+        await self.conn.commit()
+
+    async def reset_journal(self, guild_id: int) -> Journal:
+        """Back to a brand-new ordinary cat that has just arrived."""
+        await self.set_journal(guild_id, default_journal(self.bot_name), "reset")
+        await self.conn.execute(
+            "UPDATE journal SET can_speak = 0, reflections = 0, born_at = ? WHERE guild_id = ?", (time.time(), guild_id)
+        )
+        await self.conn.commit()
+        return await self.journal(guild_id)
 
     async def reflection_due(self, every: int, min_seconds: float) -> list[int]:
         async with self.conn.execute(

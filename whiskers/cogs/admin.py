@@ -7,7 +7,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ..db import default_journal
 from ..llm import LLMError
 from ..ui import ask_to_confirm, embed
 
@@ -19,6 +18,7 @@ ChannelTarget = Union[
     discord.CategoryChannel, discord.Thread,
 ]
 MODE_NAMES = {"allowlist": "only in allowed channels", "everywhere": "everywhere except blocked channels"}
+SPEECH_NAMES = {False: "cat sounds and actions only", True: "has learned to communicate"}
 
 
 def _on(value: bool) -> str:
@@ -182,7 +182,8 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         journal = await bot.db.journal(interaction.guild_id)
         result.add_field(name="Memory", value=(
             f"{counts['memories']} memories · {counts['profiles']} people · {counts['messages']} recent messages\n"
-            f"Journal version {journal.version} (`/cat journal` to read it)"
+            f"Journal version {journal.version} (`/cat journal` to read it)\n"
+            f"Speech: {SPEECH_NAMES[journal.can_speak]}"
         ), inline=False)
         await interaction.response.send_message(embed=result, ephemeral=True)
 
@@ -218,12 +219,28 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             return
         await interaction.response.send_message(embed=embed("Journal restored", journal.text), ephemeral=True)
 
+    @personality.command(name="speech", description="Choose whether Whiskers can communicate beyond meows")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="Just a cat: sounds and actions only (default)", value="cat"),
+        app_commands.Choice(name="Has learned to communicate (the journal says how)", value="communicate"),
+    ])
+    async def personality_speech(self, interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
+        can_speak = mode.value == "communicate"
+        await self.bot.db.set_can_speak(interaction.guild_id, can_speak)
+        if can_speak:
+            text = ("Whiskers can now get its thoughts across. Add a line to its journal with "
+                    "`/whiskers personality edit` to say how, for example \"- People can hear my thoughts now.\"")
+        else:
+            text = ("Whiskers is just a cat again: only meows, purrs and actions. Left alone, it can learn to "
+                    "communicate on its own once the server has spent enough time teaching it.")
+        await interaction.response.send_message(text, ephemeral=True)
+
     @personality.command(name="reset", description="Turn Whiskers back into a brand-new ordinary cat")
     async def personality_reset(self, interaction: discord.Interaction) -> None:
-        if not await ask_to_confirm(interaction, "Reset Whiskers to an ordinary cat? Its memories of people stay; "
-                                                 "use `/whiskers personality undo` to change your mind.", "Reset"):
+        if not await ask_to_confirm(interaction, "Reset Whiskers to an ordinary cat that just arrived and can't talk? Its memories of "
+                                                 "people stay.", "Reset"):
             return
-        await self.bot.db.set_journal(interaction.guild_id, default_journal(self.bot.cfg.bot_name), "reset")
+        await self.bot.db.reset_journal(interaction.guild_id)
         await interaction.edit_original_response(content="Whiskers is an ordinary cat again. 🐈")
 
     # ---- memory ----

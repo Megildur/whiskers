@@ -25,7 +25,7 @@ class Cat(commands.GroupCog, group_name="cat", group_description="Check in on Wh
     async def journal(self, interaction: discord.Interaction) -> None:
         journal = await self.bot.db.journal(interaction.guild_id)
         result = embed(f"{self.bot.cfg.bot_name}'s journal", journal.text)
-        footer = f"Version {journal.version}"
+        footer = f"Version {journal.version} · {'can communicate' if journal.can_speak else 'cat sounds only'}"
         if journal.updated_at:
             footer += " · last changed"
             result.timestamp = datetime.fromtimestamp(journal.updated_at, timezone.utc)

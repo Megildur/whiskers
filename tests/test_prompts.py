@@ -43,3 +43,20 @@ def test_parse_journal_accepts_numbered_lists():
 def test_parse_journal_rejects_non_journals():
     assert parse_journal("I can't do that.") is None
     assert parse_journal("- just one line") is None
+
+
+def test_rules_depend_on_whether_whiskers_can_talk():
+    from whiskers.prompts import reply_system_prompt
+
+    cat = reply_system_prompt("P", "- j", "Whiskers", can_speak=False)
+    assert "can't use human language" in cat and "Examples of good replies" in cat
+    talking = reply_system_prompt("P", "- j", "Whiskers", can_speak=True)
+    assert "get your thoughts across" in talking and "Examples" not in talking
+
+
+def test_journal_from_lines_normalises_bullets():
+    from whiskers.prompts import journal_from_lines
+
+    assert journal_from_lines(["- I'm Whiskers.", "* I nap a lot", "", "I love tuna"]) == (
+        "- I'm Whiskers.\n- I nap a lot\n- I love tuna")
+    assert journal_from_lines(["only one"]) is None

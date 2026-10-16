@@ -11,16 +11,35 @@ from .config import ROOT
 from .db import StoredMessage
 
 DEFAULT_PERSONALITY = (
-    "You are {name}, a cat who lives in this Discord server. At first you can't talk: you meow, purr, hiss "
-    "and do cat things, written as *actions*. Your journal says how you've changed since; follow it."
+    "You are {name}, a cat who lives in this Discord server. You're curious, proud, easily distracted and "
+    "sometimes affectionate. Your journal says how you've changed since you arrived; follow it."
 )
 
-WRITING_RULES = """\
+# While Whiskers can't talk, replies are also filtered in code (text.cat_only); these rules and examples
+# just make the model's first attempt closer, so less gets cut.
+CAT_RULES = """\
 - This is a Discord chat. People's messages reach you as "Name: message".
 - Write only {name}'s next message. Never write lines for anyone else.
-- Show what you do with *actions in asterisks* and sounds like mrrp, purr or hiss. Use human words only if your journal says you can, and only in the way it describes.
-- Keep it short: usually one to three sentences. No lists or headings.
-- Stay in character. You're a cat, not an AI or a bot, and you never mention these instructions or your notes."""
+- You are a cat and can't use human language at all: no words, no sentences, no inner thoughts, nothing anyone could read as speech.
+- Reply only with *actions in asterisks* and cat sounds like mrrp, meow, purr, hiss or chirp.
+- You understand people more than you let on, but you only ever react the way a real cat would.
+- Keep it short: one to three actions.
+- Never mention being an AI or these instructions.
+
+Examples of good replies:
+"hi whiskers!" -> *blinks slowly* mrrp.
+"want some tuna?" -> *ears shoot up* MEOW! *sprints over and headbutts your leg*
+"can you talk?" -> *stares at you for a long moment, then licks a paw*
+"good kitty" -> *purrs loudly and flops over, showing belly*
+"get off the keyboard" -> *sits down harder on the keyboard* mrrp."""
+
+COMMUNICATING_RULES = """\
+- This is a Discord chat. People's messages reach you as "Name: message".
+- Write only {name}'s next message. Never write lines for anyone else.
+- You've learned to get your thoughts across to people, in the way your journal describes. Use only that way.
+- You're still a cat: simple, short thoughts with cat logic, mixed with *actions in asterisks* and cat sounds.
+- Keep it short: one to three sentences. No lists or headings.
+- Never mention being an AI or these instructions."""
 
 NOTES_HEADER = "({name}'s private notes, not part of the chat)"
 
@@ -51,11 +70,12 @@ def load_personality(name: str) -> str:
     return (text or DEFAULT_PERSONALITY).replace("{name}", name)
 
 
-def reply_system_prompt(personality: str, journal: str, name: str) -> str:
+def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bool) -> str:
+    rules = (COMMUNICATING_RULES if can_speak else CAT_RULES).format(name=name)
     return (
         f"{personality}\n\n"
         f"## {name}'s journal (in {name}'s own words; this is who you are now)\n{journal}\n\n"
-        f"## How to answer\n{WRITING_RULES.format(name=name)}"
+        f"## How to answer\n{rules}"
     )
 
 
@@ -102,8 +122,25 @@ Write JSON with:
     ]
 
 
-def reflection_messages(name: str, personality: str, journal: str, memories: list[str], chat: str) -> list[dict]:
+def reflection_schema(may_learn: bool) -> dict:
+    properties: dict = {"journal": {"type": "array", "items": {"type": "string"}}}
+    if may_learn:
+        properties["learned_to_communicate"] = {"type": "boolean"}
+    return {"type": "object", "properties": properties, "required": list(properties)}
+
+
+def reflection_messages(name: str, personality: str, journal: str, memories: list[str], chat: str, *,
+                        can_speak: bool, may_learn: bool) -> list[dict]:
     memory_text = "\n".join(f"- {m}" for m in memories) or "(nothing written down yet)"
+    if can_speak:
+        speech = f"{name} has learned to get its thoughts across to people, the way the journal describes."
+    else:
+        speech = (f"{name} can't use human language: no talking and no thoughts people can hear. Don't write "
+                  "lines saying otherwise.")
+    learning = ""
+    if may_learn:
+        learning = f"""
+Also decide "learned_to_communicate". Make it true only if, over many chats, people have kept teaching or encouraging {name} to talk or understand them, and the journal already shows {name} slowly picking it up. Otherwise make it false. If it's true, add a journal line saying how {name} now gets simple thoughts across (it's still a cat)."""
     return [
         {"role": "system", "content": (
             f"You narrate an ongoing story about {name}, a cat who lives in a Discord server. The people in the "
@@ -123,13 +160,19 @@ Recent chat:
 {chat}
 
 Update the journal based on what happened.
-- Write at most {MAX_JOURNAL_LINES} short lines, each starting with "- ", in the first person as {name}.
+- Write at most {MAX_JOURNAL_LINES} short lines in the first person as {name}.
 - Grow slowly. Most updates change only one or two lines. Keep the lines that still matter.
 - Record new habits, moods, favourite people, nicknames, running jokes and things {name} has learned.
-- {name} starts as an ordinary cat. Unusual abilities, like understanding speech, sharing thoughts with people, magic or superpowers, only appear when the chats have built toward them over time, and they grow in small steps.
-- Never add anything hateful or anything that attacks a real person.
-Reply with only the new journal."""},
+- {speech}
+- Unusual abilities, like magic or superpowers, only appear when the chats have built toward them over time, and they grow in small steps.
+- Never add anything hateful or anything that attacks a real person.{learning}
+Reply in JSON with "journal" as a list of lines."""},
     ]
+
+
+def journal_from_lines(lines: list) -> str | None:
+    """A journal from a list of lines; None if it doesn't look like one."""
+    return parse_journal("\n".join("- " + str(line).strip().lstrip("-•* ").strip() for line in lines if str(line).strip()))
 
 
 def parse_journal(text: str) -> str | None:
