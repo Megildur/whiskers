@@ -34,3 +34,60 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         await db.close()
 
     asyncio.run(go())
+
+
+class FakeResponse:
+    def __init__(self, log):
+        self.log = log
+
+    async def send_message(self, content=None, **kwargs):
+        self.log.append(("send", content, kwargs.get("ephemeral", False)))
+
+
+class FakeFollowup:
+    def __init__(self, log):
+        self.log = log
+
+    async def send(self, content=None, **kwargs):
+        self.log.append(("followup", content, kwargs.get("file").filename if kwargs.get("file") else None))
+
+
+class FakeInteraction:
+    def __init__(self):
+        self.log = []
+        self.response = FakeResponse(self.log)
+        self.followup = FakeFollowup(self.log)
+        self.guild_id = 1
+        self.user = SimpleNamespace(id=7, display_name="BRANDON ‼️", name="brandon", mention="<@7>")
+        self.channel = None
+
+    async def edit_original_response(self, content=None, **kwargs):
+        self.log.append(("edit", content))
+
+
+def test_simulate_command_posts_public_progress_and_the_transcript(cfg, tmp_path):
+    from whiskers.cogs.admin import Admin
+
+    async def go():
+        db = Database(tmp_path / "real.db")
+        await db.connect()
+        bot = SimpleNamespace(cfg=cfg, db=db, llm=FakeLLM(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
+                              engine=SimpleNamespace(description="fake", ready=True, status="ready"))
+        cog = Admin.__new__(Admin)
+        cog.bot, cog._simulating = bot, False
+        interaction = FakeInteraction()
+        await Admin.simulate.callback(cog, interaction, None)
+
+        kinds = [entry[0] for entry in interaction.log]
+        total = sum(len(lines) for lines in SCENES.values())
+        assert interaction.log[0][0] == "send" and interaction.log[0][2] is False  # public, not ephemeral
+        assert "Simulation running" in interaction.log[0][1]
+        assert kinds.count("edit") == total + 1  # one per reply, plus the final one
+        assert f"{total // 2}/{total} replies" in interaction.log[total // 2][1]
+        assert "Simulation finished" in interaction.log[-2][1]
+        assert interaction.log[-1] == ("followup", interaction.log[-1][1], "whiskers-simulation.txt")
+        assert interaction.log[-1][1].startswith("<@7>")
+        assert not cog._simulating
+        await db.close()
+
+    asyncio.run(go())

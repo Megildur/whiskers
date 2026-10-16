@@ -86,7 +86,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers chattiness <percent> [channel]` | Manage Server | How often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [scene]` | Manage Server | Plays test scenes (catnip, window, dinner, stranger, chaos, belly) through the model and sends you the transcript, with Whiskers' private notes on what it understood. Uses throwaway memory. |
+| `/whiskers simulate [scene]` | Manage Server | Plays test scenes (catnip, window, dinner, stranger, chaos, belly) through the model with throwaway memory. A public message shows live progress; the transcript, with Whiskers' private notes on what it understood, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |

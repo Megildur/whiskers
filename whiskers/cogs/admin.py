@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import time
 from typing import TYPE_CHECKING, Optional, Union
 
@@ -10,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..llm import LLMError
-from ..simulate import SCENES, run_scenes
+from ..simulate import SCENES, Step, count_replies, run_scenes
 from ..text import person_name
 from ..ui import ask_to_confirm, embed
 
@@ -21,12 +22,102 @@ ChannelTarget = Union[
     discord.TextChannel, discord.VoiceChannel, discord.StageChannel, discord.ForumChannel,
     discord.CategoryChannel, discord.Thread,
 ]
+log = logging.getLogger("whiskers.admin")
+
 MODE_NAMES = {"allowlist": "only in allowed channels", "everywhere": "everywhere except blocked channels"}
 SPEECH_NAMES = {False: "cat sounds and actions only", True: "has learned to communicate"}
 
 
 def _on(value: bool) -> str:
     return "on" if value else "off"
+
+
+def _duration(seconds: float) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+
+
+class SimulationProgress:
+    """Keeps a public message up to date while /whiskers simulate runs.
+
+    The command's own reply is edited for the first 14 minutes; Discord stops allowing that at 15, so a
+    longer run continues in a normal channel message.
+    """
+
+    REPLY_EDIT_LIMIT = 14 * 60
+
+    def __init__(self, interaction: discord.Interaction, total: int, scenes: int) -> None:
+        self.interaction = interaction
+        self.total = total
+        self.scenes = scenes
+        self.done = 0
+        self.started = time.monotonic()
+        self.last: Step | None = None
+        self.channel_message: discord.Message | None = None
+
+    def elapsed(self) -> float:
+        return time.monotonic() - self.started
+
+    def text(self, headline: str | None = None) -> str:
+        filled = round(20 * self.done / self.total) if self.total else 20
+        bar = "▓" * filled + "░" * (20 - filled)
+        if headline is None:
+            where = (f" · scene {self.last.scene_number} of {self.scenes}: **{self.last.scene}**"
+                     if self.last else "")
+            headline = f"🧪 **Simulation running**{where}"
+            if self.done:
+                left = self.elapsed() / self.done * (self.total - self.done)
+                eta = f" · about {_duration(left)} left"
+            else:
+                eta = " · warming up"
+            headline += f"\n`{bar}` {self.done}/{self.total} replies{eta}"
+        parts = [headline]
+        if self.last:
+            parts.append(
+                f"> **{self.last.speaker}:** {self.last.said[:200]}\n"
+                f"> -# scene: {(self.last.note or '-')[:200]}\n"
+                f"> **Whiskers:** {self.last.reply[:600]}  ({self.last.seconds:.0f}s)"
+            )
+        return "\n".join(parts)[:1990]
+
+    async def _show(self, content: str) -> None:
+        try:
+            if self.elapsed() < self.REPLY_EDIT_LIMIT:
+                await self.interaction.edit_original_response(content=content)
+            elif self.channel_message is None:
+                self.channel_message = await self.interaction.channel.send(content)
+            else:
+                await self.channel_message.edit(content=content)
+        except discord.HTTPException as error:
+            log.warning("Couldn't update the simulation progress: %s", error)
+
+    async def update(self, step: Step) -> None:
+        self.done, self.last = step.done, step
+        await self._show(self.text())
+
+    async def finish(self, headline: str, lines: list[str]) -> None:
+        await self._show(self.text(headline))
+        if not lines:
+            return
+        user = self.interaction.user
+        note = (f"{user.mention} here's the transcript. Each reply shows Whiskers' private scene note, so you can "
+                "see what it understood.")
+        mention = discord.AllowedMentions(users=[user])
+        transcript = "\n".join(lines)
+        file = discord.File(io.BytesIO(transcript.encode()), filename="whiskers-simulation.txt")
+        try:
+            if self.elapsed() < self.REPLY_EDIT_LIMIT:
+                await self.interaction.followup.send(note, file=file, allowed_mentions=mention)
+            else:
+                await self.interaction.channel.send(note, file=file, allowed_mentions=mention)
+            return
+        except discord.HTTPException as error:
+            log.warning("Couldn't post the transcript file (%s); posting it as text.", error)
+        try:  # no permission to attach files: post the text instead
+            for start in range(0, len(transcript), 1900):
+                await self.interaction.channel.send(f"```\n{transcript[start:start + 1900]}\n```")
+        except discord.HTTPException as error:
+            log.warning("Couldn't post the transcript: %s", error)
 
 
 class JournalEditor(discord.ui.Modal, title="Edit Whiskers' journal"):
@@ -57,6 +148,7 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
 
     def __init__(self, bot: WhiskersBot) -> None:
         self.bot = bot
+        self._simulating = False
         super().__init__()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -210,7 +302,7 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         ), inline=False)
         await interaction.response.send_message(embed=result, ephemeral=True)
 
-    @app_commands.command(name="simulate", description="Play test scenes with Whiskers and get the transcript")
+    @app_commands.command(name="simulate", description="Play test scenes with Whiskers and post the transcript")
     @app_commands.describe(scene="Play just one scene (default: all of them, which takes a few minutes)")
     @app_commands.choices(scene=[app_commands.Choice(name=name, value=name) for name in SCENES])
     async def simulate(self, interaction: discord.Interaction,
@@ -219,24 +311,28 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             await interaction.response.send_message(f"Whiskers' brain isn't ready yet ({self.bot.engine.status}).",
                                                     ephemeral=True)
             return
-        await interaction.response.defer(ephemeral=True, thinking=True)
-        scenes = [scene.value] if scene else list(SCENES)
-        started = time.monotonic()
-        try:
-            transcript = await run_scenes(
-                self.bot, interaction.guild_id, interaction.user.id,
-                person_name(interaction.user.display_name, interaction.user.name), scenes,
-            )
-        except LLMError as error:
-            await interaction.followup.send(f"The simulation stopped: {error}", ephemeral=True)
+        if self._simulating:
+            await interaction.response.send_message("A simulation is already running. Wait for it to finish.",
+                                                    ephemeral=True)
             return
-        file = discord.File(io.BytesIO(transcript.encode()), filename="whiskers-simulation.txt")
-        text = (f"Played {len(scenes)} scene(s) in {time.monotonic() - started:.0f}s. Each reply shows Whiskers' "
-                "private scene note, so you can see what it understood.")
-        if time.monotonic() - started < 14 * 60:
-            await interaction.followup.send(text, file=file, ephemeral=True)
-        else:  # Discord only lets a command answer for 15 minutes
-            await interaction.channel.send(f"{interaction.user.mention} {text}", file=file)
+        scenes = [scene.value] if scene else list(SCENES)
+        progress = SimulationProgress(interaction, count_replies(scenes), len(scenes))
+        await interaction.response.send_message(progress.text())
+        lines: list[str] = []
+        self._simulating = True
+        try:
+            await run_scenes(self.bot, interaction.guild_id, interaction.user.id,
+                             person_name(interaction.user.display_name, interaction.user.name), scenes,
+                             on_step=progress.update, lines=lines)
+        except Exception as error:  # share whatever was played, then report what went wrong
+            log.exception("Simulation failed")
+            await progress.finish(f"⚠️ **Simulation stopped** after {progress.done} of {progress.total} replies: "
+                                  f"{str(error)[:300]}", lines)
+        else:
+            await progress.finish(f"✅ **Simulation finished**: {progress.total} replies in "
+                                  f"{_duration(progress.elapsed())}.", lines)
+        finally:
+            self._simulating = False
 
     # ---- personality ----
 

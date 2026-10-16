@@ -7,9 +7,11 @@ understood. Change the personality or prompts, run the same scenes again and com
 from __future__ import annotations
 
 import itertools
+import logging
 import random
 import time
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .brain import Brain, Incoming
 from .db import Database, GuildSettings
@@ -58,16 +60,42 @@ SCENES: dict[str, list[tuple[str, str]]] = {
 FRIEND = (11, "Angel")
 NEWCOMER = (12, "Tearyu")
 
+log = logging.getLogger("whiskers.simulate")
 
-async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name: str,
-                     scenes: list[str]) -> str:
+
+@dataclass
+class Step:
+    """One finished reply, for progress updates."""
+    done: int
+    total: int
+    scene: str
+    scene_number: int
+    scene_count: int
+    speaker: str
+    said: str
+    note: str
+    reply: str
+    seconds: float
+
+
+def count_replies(scenes: list[str]) -> int:
+    return sum(len(SCENES[name]) for name in scenes)
+
+
+async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name: str, scenes: list[str],
+                     on_step: Callable[[Step], Awaitable[None]] | None = None,
+                     lines: list[str] | None = None) -> str:
+    """Play the scenes and return the transcript. `lines` fills up as it goes, so a caller can still
+    share what was played if something fails halfway."""
     cfg = bot.cfg
     path = cfg.data_dir / "simulation.db"
     path.unlink(missing_ok=True)
     db = Database(path, cfg.bot_name)
     await db.connect()
     ids = itertools.count(int(time.time() * 1000) << 22)  # increasing, like Discord message IDs
-    lines = [f"Whiskers simulation · model: {bot.engine.description} · temperature {cfg.temperature}", ""]
+    lines = [] if lines is None else lines
+    lines += [f"Whiskers simulation · model: {bot.engine.description} · temperature {cfg.temperature}", ""]
+    total, done = count_replies(scenes), 0
     try:
         real = await bot.db.journal(guild_id)
         await db.set_journal(guild_id, real.text, "copied for simulation")
@@ -90,13 +118,20 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 started = time.monotonic()
                 async with bot.scheduler.reply_turn():  # takes turns with real chat
                     reply = await brain.compose(msg, "direct")
+                seconds = time.monotonic() - started
                 await brain.record_own_message(msg, next(ids), reply, time.time())
+                note = brain.last_scene(channel_id)
                 lines += [
                     f"{user_name}: {text}",
-                    f"    (scene: {brain.last_scene(channel_id) or '-'})",
-                    f"{cfg.bot_name}: {reply}    [{time.monotonic() - started:.0f}s]",
+                    f"    (scene: {note or '-'})",
+                    f"{cfg.bot_name}: {reply}    [{seconds:.0f}s]",
                     "",
                 ]
+                done += 1
+                log.info("Simulation %d/%d (%s): %s -> %s", done, total, name, text, reply)
+                if on_step:
+                    await on_step(Step(done, total, name, number + 1, len(scenes), user_name, text, note, reply,
+                                       seconds))
     finally:
         await db.close()
         path.unlink(missing_ok=True)
