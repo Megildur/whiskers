@@ -244,7 +244,7 @@ class Brain:
                     return None
                 job.started = True
                 async with typing():
-                    text = await self._compose(job.message, job.kind)
+                    text = await self.compose(job.message, job.kind)
                 message_id = await deliver(text)
                 if message_id is not None:
                     await self.record_own_message(job.message, message_id, text, time.time())
@@ -337,6 +337,10 @@ class Brain:
                          "Join in the way a cat would.")
         return notes
 
+    def last_scene(self, channel_id: int) -> str:
+        """Whiskers' latest private note on what's happening in a channel."""
+        return self._scenes.get(channel_id, ("", 0.0))[0]
+
     async def _owner_name(self, guild_id: int) -> str | None:
         owner_id = self._owners.get(guild_id)
         profile = await self.db.profile(guild_id, owner_id) if owner_id else None
@@ -346,7 +350,7 @@ class Brain:
         """Whiskers' own past messages with any human words removed, so old slips don't encourage new ones."""
         return [replace(r, content=cat_only(r.content) or "*meows*") if r.is_self else r for r in rows]
 
-    async def _compose(self, msg: Incoming, kind: str) -> str:
+    async def compose(self, msg: Incoming, kind: str) -> str:
         journal = await self.db.journal(msg.guild_id)
         rows = self.window(msg.channel_id, await self.db.recent_messages(msg.channel_id, self.cfg.history_messages))
         if not journal.can_speak:

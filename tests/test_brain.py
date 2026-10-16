@@ -204,16 +204,16 @@ def test_a_cat_that_cant_talk_has_its_words_removed(cfg, tmp_path):
         await brain.db.connect()
         msg = incoming("hey whiskers", mentions_me=True)
         await brain.observe(msg, GuildSettings(), 0)
-        assert await brain._compose(msg, "direct") == "*tilts head* Mrrp?"
+        assert await brain.compose(msg, "direct") == "*tilts head* Mrrp?"
         system = brain.llm.calls[-1][0][0]["content"]
         assert "can't use human language" in system
 
         await brain.db.set_can_speak(1, True)
-        assert await brain._compose(msg, "direct") == "*tilts head* Mrrp? Huh. You're new. Do you have food?"
+        assert await brain.compose(msg, "direct") == "*tilts head* Mrrp? Huh. You're new. Do you have food?"
 
         owner_msg = incoming("*kicks you out the window*", author=8, message_id=600, owner_id=8)
         await brain.observe(owner_msg, GuildSettings(), 0)
-        await brain._compose(owner_msg, "direct")
+        await brain.compose(owner_msg, "direct")
         system = brain.llm.calls[-1][0][0]["content"]
         assert "user8 is your human" in system
         assert brain.llm.calls[-1][1]["extra"]["dry_multiplier"] > 0  # anti-repetition sampling
@@ -262,7 +262,7 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
         for i, text in enumerate(["*gives catnip*", "good kitty", "*pets*"]):
             msg = incoming(text, author=8, message_id=700 + i * 10, mentions_me=True, owner_id=8)
             await brain.observe(msg, GuildSettings(), 0)
-            sent = await brain._compose(msg, "direct")
+            sent = await brain.compose(msg, "direct")
             assert sent == "*rolls in the catnip, purrs and nuzzles the bag*"  # the scene note is never posted
             await brain.record_own_message(msg, 701 + i * 10, sent, 2000.0 + i)
         last_turn = brain.llm.calls[-1][0][-1]["content"]

@@ -33,7 +33,7 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         "Q4_K_M", "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf", 7.5,
         "Best at roleplay and following the conversation. Needs about 10 GB of RAM; replies take ~3x longer "
         "than qwen3-4b.",
-        system_in_first_turn=True, temperature=0.8,
+        system_in_first_turn=True, temperature=0.9,
     ),
     "llama3.1-8b": ModelPreset(
         ("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"),

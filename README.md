@@ -84,6 +84,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers chattiness <percent> [channel]` | Manage Server | How often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
+| `/whiskers simulate [scene]` | Manage Server | Plays test scenes (catnip, window, dinner, stranger, chaos, belly) through the model and sends you the transcript, with Whiskers' private notes on what it understood. Uses throwaway memory. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -146,6 +147,10 @@ The commented `.env.example` lists them all. The ones you might change:
 - `LLM_CONTEXT`: lower it to `4096` if the server runs out of memory.
 - `TIMEZONE`: so Whiskers knows when it's night (for example `America/New_York`).
 - `OWNER_IDS`: your Discord user ID, to use the admin commands in any server.
+
+## Testing changes
+
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. Each line shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. The scenes live in `whiskers/simulate.py`; add your own there. Real chats wait while a simulation reply is being written, so run it when the server is quiet.
 
 ## Using a different AI server
 

@@ -74,3 +74,12 @@ def test_repeated_actions_finds_what_whiskers_keeps_doing():
               "*nuzzles their hand, meowing softly*", "*flops over dramatically*"]
     assert repeated_actions(recent, ignore={"Brandon"}) == ["nuzzles", "purrs"]
     assert repeated_actions(["*zoomies*", "*naps*"]) == []
+
+
+def test_person_name_turns_decorated_display_names_into_names():
+    from whiskers.text import person_name
+
+    assert person_name("ANGEL ‼️") == "Angel"
+    assert person_name("~*Lily*~") == "Lily"
+    assert person_name("💀💀", "skull_guy") == "skull guy"
+    assert person_name("怠竜 Tearyū") == "怠竜 Tearyū"

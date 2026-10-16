@@ -139,7 +139,8 @@ class ManagedEngine(Engine):
         # Generation is limited by memory speed, so more than ~8 threads mostly adds contention on shared hosts.
         self.threads = cfg.llm_threads or min(8, system.cpu_limit())
         self.model_name = "whiskers"
-        self.description = cfg.model if cfg.preset else Path(cfg.model_path or urlparse(cfg.model_url).path).name
+        custom = cfg.model_path or urlparse(cfg.model_url).path
+        self.description = Path(custom).name if custom else cfg.model
         self._proc: asyncio.subprocess.Process | None = None
         self._task: asyncio.Task | None = None
         self._stopping = False

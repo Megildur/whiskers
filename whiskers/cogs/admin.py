@@ -1,6 +1,8 @@
 """/whiskers: server setup for people with Manage Server."""
 from __future__ import annotations
 
+import io
+import time
 from typing import TYPE_CHECKING, Optional, Union
 
 import discord
@@ -8,6 +10,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..llm import LLMError
+from ..simulate import SCENES, run_scenes
+from ..text import person_name
 from ..ui import ask_to_confirm, embed
 
 if TYPE_CHECKING:
@@ -205,6 +209,34 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             f"Speech: {SPEECH_NAMES[journal.can_speak]}"
         ), inline=False)
         await interaction.response.send_message(embed=result, ephemeral=True)
+
+    @app_commands.command(name="simulate", description="Play test scenes with Whiskers and get the transcript")
+    @app_commands.describe(scene="Play just one scene (default: all of them, which takes a few minutes)")
+    @app_commands.choices(scene=[app_commands.Choice(name=name, value=name) for name in SCENES])
+    async def simulate(self, interaction: discord.Interaction,
+                       scene: Optional[app_commands.Choice[str]] = None) -> None:
+        if not self.bot.engine.ready:
+            await interaction.response.send_message(f"Whiskers' brain isn't ready yet ({self.bot.engine.status}).",
+                                                    ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        scenes = [scene.value] if scene else list(SCENES)
+        started = time.monotonic()
+        try:
+            transcript = await run_scenes(
+                self.bot, interaction.guild_id, interaction.user.id,
+                person_name(interaction.user.display_name, interaction.user.name), scenes,
+            )
+        except LLMError as error:
+            await interaction.followup.send(f"The simulation stopped: {error}", ephemeral=True)
+            return
+        file = discord.File(io.BytesIO(transcript.encode()), filename="whiskers-simulation.txt")
+        text = (f"Played {len(scenes)} scene(s) in {time.monotonic() - started:.0f}s. Each reply shows Whiskers' "
+                "private scene note, so you can see what it understood.")
+        if time.monotonic() - started < 14 * 60:
+            await interaction.followup.send(text, file=file, ephemeral=True)
+        else:  # Discord only lets a command answer for 15 minutes
+            await interaction.channel.send(f"{interaction.user.mention} {text}", file=file)
 
     # ---- personality ----
 

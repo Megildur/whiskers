@@ -33,6 +33,20 @@ def readable(content: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def person_name(display_name: str, fallback: str = "someone") -> str:
+    """A Discord display name as a plain name, so the model treats it as a person, not a thing.
+
+    "ANGEL ‼️" -> "Angel", "xX_Shadow_Xx" stays, emoji and decorations go.
+    """
+    kept = "".join(ch if ch.isalnum() or ch in " '-_." else " " for ch in display_name)
+    name = " ".join(kept.split()).strip(" -_.'")
+    if not name:
+        name = " ".join("".join(ch if ch.isalnum() else " " for ch in fallback).split()) or "someone"
+    if name.isupper() and len(name) > 3:
+        name = name.title()
+    return name[:32]
+
+
 def keywords(text: str, limit: int = 8) -> list[str]:
     seen: list[str] = []
     for word in WORD.findall(text.lower()):

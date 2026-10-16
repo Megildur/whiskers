@@ -12,7 +12,7 @@ from discord.ext import commands
 from ..brain import Incoming, ReplyJob, chattiness_for, is_allowed
 from ..db import GuildSettings
 from ..llm import LLMError
-from ..text import readable, split_message
+from ..text import person_name, readable, split_message
 
 if TYPE_CHECKING:
     from ..bot import WhiskersBot
@@ -120,7 +120,7 @@ class Chat(commands.Cog):
             guild_id=message.guild.id if message.guild else 0,
             channel_id=message.channel.id,
             author_id=message.author.id,
-            author_name=message.author.display_name,
+            author_name=person_name(message.author.display_name, message.author.name),
             content=text[:1000],
             created_at=message.created_at.timestamp(),
             mentions_me=mentions_me,
