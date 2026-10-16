@@ -124,6 +124,8 @@ PACKS: dict[str, dict[str, list[tuple[str, str]]]] = {
             ("friend", "*moves the red dot up the wall*"),
             ("friend", "*makes the dot disappear*"),
             ("friend", "*points it at your paw*"),
+            ("friend", "*moves the dot onto Brandon's leg*"),
+            ("friend", "*turns the laser off and puts it in my pocket*"),
         ],
         "box": [
             ("owner", "*sets down an empty cardboard box*"),
