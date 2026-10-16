@@ -86,7 +86,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers chattiness <percent> [channel]` | Manage Server | How often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [scene]` | Manage Server | Plays test scenes (catnip, window, dinner, stranger, chaos, belly) through the model with throwaway memory. A public message shows live progress; the transcript, with Whiskers' private notes on what it understood, is posted in the channel when it's done. |
+| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, or all (39 scenes, about 45 minutes). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -148,11 +148,16 @@ The commented `.env.example` lists them all. The ones you might change:
 - `LLM_THREADS`: CPU threads for the model. Leave it empty; Whiskers reads your plan's CPU limit.
 - `LLM_CONTEXT`: lower it to `4096` if the server runs out of memory.
 - `TIMEZONE`: so Whiskers knows when it's night (for example `America/New_York`).
+- `CAT_GENDER`: `boy` (default) or `girl`, for the pronouns the story uses.
 - `OWNER_IDS`: your Discord user ID, to use the admin commands in any server.
 
 ## Testing changes
 
-`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. Each line shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. The scenes live in `whiskers/simulate.py`; add your own there. Real chats wait while a simulation reply is being written, so run it when the server is quiet.
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 39 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, and one long day), so a pack takes a few minutes.
+
+Each line of the transcript shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. Replies are checked automatically for stock fallback actions, human words that had to be removed (with what the model actually wrote), "I/my" in actions, repetition and overly long replies, with a count at the end. The scenes live in `whiskers/simulate.py`. Real chats wait while a simulation reply is being written, so run it when the server is quiet.
+
+Simulations don't change the model itself. They show where Whiskers goes wrong, and the fixes go into `personality.txt` and the rules and example replies in `whiskers/prompts.py`.
 
 ## Using a different AI server
 

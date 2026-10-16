@@ -116,6 +116,7 @@ def _ids(name: str) -> frozenset[int]:
 class Config:
     discord_token: str
     bot_name: str
+    cat_gender: str  # "boy" or "girl": which pronouns Whiskers gets
     owner_ids: frozenset[int]
     timezone: str
     allow_dms: bool
@@ -162,9 +163,13 @@ def load_config() -> Config:
         names = ", ".join(MODEL_PRESETS)
         raise SystemExit(f"MODEL={model!r} isn't a preset ({names}). Pick one, or set MODEL_URL or MODEL_PATH.")
     data_dir = ROOT / _str("DATA_DIR", "data")
+    gender = _str("CAT_GENDER", "boy").lower()
+    if gender not in ("boy", "girl"):
+        raise SystemExit("CAT_GENDER in .env must be 'boy' or 'girl'")
     return Config(
         discord_token=_str("DISCORD_TOKEN"),
         bot_name=_str("BOT_NAME", "Whiskers") or "Whiskers",
+        cat_gender=gender,
         owner_ids=_ids("OWNER_IDS"),
         timezone=_str("TIMEZONE", "UTC"),
         allow_dms=_bool("ALLOW_DMS", False),

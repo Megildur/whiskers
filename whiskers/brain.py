@@ -17,7 +17,7 @@ from .config import Config
 from .db import ChannelRule, Database, GuildSettings, Memory, Profile, StoredMessage
 from .llm import LLMClient, LLMError, parse_json
 from .prompts import (
-    REPLY_SCHEMA, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
+    PRONOUNS, REPLY_SCHEMA, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
     reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
 )
 from .scheduler import Scheduler
@@ -141,6 +141,7 @@ class Brain:
         self.rng = rng or random.Random()
         self.name = cfg.bot_name
         self.personality = load_personality(cfg.bot_name)
+        self.pronouns = PRONOUNS[cfg.cat_gender]
         self.user_id = 0  # the bot's Discord ID, set once logged in
         self._name_pattern = re.compile(rf"\b{re.escape(cfg.bot_name)}\b", re.I)
         self._jobs: dict[tuple[int, int], ReplyJob] = {}
@@ -149,6 +150,7 @@ class Brain:
         self._last_message: dict[int, int] = {}
         self._owners: dict[int, int] = {}  # guild -> Whiskers' human
         self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
+        self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -337,6 +339,10 @@ class Brain:
                          "Join in the way a cat would.")
         return notes
 
+    def last_raw_reply(self, channel_id: int) -> str:
+        """What the model wrote for its last reply here, before human words were filtered out."""
+        return self._raw.get(channel_id, "")
+
     def last_scene(self, channel_id: int) -> str:
         """Whiskers' latest private note on what's happening in a channel."""
         return self._scenes.get(channel_id, ("", 0.0))[0]
@@ -369,7 +375,8 @@ class Brain:
                 memories.append(memory)
 
         owner = await self._owner_name(msg.guild_id)
-        system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak, owner)
+        system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak, owner,
+                                     self.pronouns)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
         scene, scene_at = self._scenes.get(msg.channel_id, ("", 0.0))
         if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
@@ -390,7 +397,9 @@ class Brain:
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
             log.debug("Scene in %s: %s", msg.channel_id, scene)
-        text = as_stage_directions(clean_reply(reply, self.name, names))
+        self._raw[msg.channel_id] = reply
+        text = as_stage_directions(clean_reply(reply, self.name, names), self.pronouns["his"],
+                                   self.pronouns["himself"])
         if not journal.can_speak:
             text = cat_only(text)
         return text or self.rng.choice(FALLBACK_ACTIONS)
@@ -410,7 +419,8 @@ class Brain:
         guild_id, channel_id = rows[0].guild_id, rows[0].channel_id
         try:
             result = await self.llm.chat(
-                summary_messages(self.name, transcript(rows, self.name)), max_tokens=350, temperature=0.3,
+                summary_messages(self.name, transcript(rows, self.name), self.pronouns), max_tokens=350,
+                temperature=0.3,
                 json_schema=SUMMARY_SCHEMA,
             )
         except LLMError as error:
@@ -460,7 +470,7 @@ class Brain:
         result = await self.llm.chat(
             reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000),
                                 can_speak=journal.can_speak, may_learn=may_learn,
-                                owner=await self._owner_name(guild_id)),
+                                owner=await self._owner_name(guild_id), pronouns=self.pronouns),
             max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn),
         )
         data = parse_json(result.text)

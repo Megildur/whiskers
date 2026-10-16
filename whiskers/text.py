@@ -146,11 +146,11 @@ def cat_only(text: str) -> str:
     return result
 
 
-def as_stage_directions(text: str) -> str:
-    """Inside *actions*, "my"/"myself" become "its"/"itself": *flops onto my back* -> *flops onto its back*."""
+def as_stage_directions(text: str, his: str = "its", himself: str = "itself") -> str:
+    """Inside *actions*, "my"/"myself" become third person: *flops onto my back* -> *flops onto his back*."""
     def fix(match: re.Match) -> str:
-        action = re.sub(r"\bmyself\b", "itself", match.group(0))
-        return re.sub(r"\b[Mm]y\b", "its", action)
+        action = re.sub(r"\bmyself\b", himself, match.group(0))
+        return re.sub(r"\b[Mm]y\b", his, action)
     return re.sub(r"\*[^*\n]+\*", fix, text)
 
 

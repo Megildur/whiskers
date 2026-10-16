@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from whiskers.db import Database
 from whiskers.llm import ChatResult
 from whiskers.scheduler import Scheduler
-from whiskers.simulate import SCENES, run_scenes
+from whiskers.simulate import PACKS, SCENES, checks, run_scenes, scenes_for
 
 
 class FakeLLM:
@@ -79,7 +79,7 @@ def test_simulate_command_posts_public_progress_and_the_transcript(cfg, tmp_path
         await Admin.simulate.callback(cog, interaction, None)
 
         kinds = [entry[0] for entry in interaction.log]
-        total = sum(len(lines) for lines in SCENES.values())
+        total = sum(len(lines) for lines in PACKS["core"].values())  # the default pack
         assert interaction.log[0][0] == "send" and interaction.log[0][2] is False  # public, not ephemeral
         assert "Simulation running" in interaction.log[0][1]
         assert kinds.count("edit") == total + 1  # one per reply, plus the final one
@@ -121,3 +121,29 @@ def test_a_stuck_reply_stops_the_simulation_with_a_clear_message(cfg, tmp_path, 
         await db.close()
 
     asyncio.run(go())
+
+
+def test_every_scene_line_is_valid_for_both_genders():
+    from whiskers.prompts import PRONOUNS
+
+    for pronouns in PRONOUNS.values():
+        for name, lines in SCENES.items():
+            for who, template in lines:
+                assert who in ("owner", "friend", "new"), name
+                assert "{" not in template.format(name="Whiskers", **pronouns), name
+
+
+def test_choosing_scenes():
+    assert scenes_for(None) == list(PACKS["core"])
+    assert scenes_for("scary") == list(PACKS["scary"])
+    assert scenes_for("all") == list(SCENES)
+    assert scenes_for("core", "vacuum") == ["vacuum"]
+    assert scenes_for(None, "nope") == []
+
+
+def test_checks_flag_common_problems():
+    assert checks("*flicks tail*", "", []) == ["stock action: nothing usable came back from the model"]
+    assert checks("*flops onto my back*", "*flops onto my back*", []) == ["I/my inside an action"]
+    assert checks("*purrs*", "*purrs* hello friend", []) == ["words were removed"]
+    assert "repeats: purrs" in checks("*purrs loudly*", "", ["*purrs*", "*naps*"])
+    assert checks("*pounces on the toy mouse*", "*pounces on the toy mouse*", ["*naps*"]) == []

@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..llm import LLMError
-from ..simulate import SCENES, Step, count_replies, run_scenes
+from ..simulate import PACKS, SCENES, Step, count_replies, run_scenes, scenes_for
 from ..text import person_name
 from ..ui import ask_to_confirm, embed
 
@@ -323,10 +323,17 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         await interaction.response.send_message(embed=result, ephemeral=True)
 
     @app_commands.command(name="simulate", description="Play test scenes with Whiskers and post the transcript")
-    @app_commands.describe(scene="Play just one scene (default: all of them, which takes a few minutes)")
-    @app_commands.choices(scene=[app_commands.Choice(name=name, value=name) for name in SCENES])
-    async def simulate(self, interaction: discord.Interaction,
-                       scene: Optional[app_commands.Choice[str]] = None) -> None:
+    @app_commands.describe(pack="Which set of scenes to play (default: core). 'all' takes about 45 minutes.",
+                           scene="Play just one scene instead of a pack")
+    @app_commands.choices(pack=[
+        app_commands.Choice(name=f"{name} ({len(scenes)} scene{'s' if len(scenes) != 1 else ''}, "
+                                 f"~{count_replies(list(scenes)) * 20 // 60 + 1} min)",
+                            value=name)
+        for name, scenes in PACKS.items()
+    ] + [app_commands.Choice(name=f"all ({len(SCENES)} scenes, ~{count_replies(list(SCENES)) * 20 // 60} min)",
+                             value="all")])
+    async def simulate(self, interaction: discord.Interaction, pack: Optional[app_commands.Choice[str]] = None,
+                       scene: Optional[str] = None) -> None:
         if not self.bot.engine.ready:
             await interaction.response.send_message(f"Whiskers' brain isn't ready yet ({self.bot.engine.status}).",
                                                     ephemeral=True)
@@ -335,7 +342,10 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             await interaction.response.send_message("A simulation is already running. Wait for it to finish.",
                                                     ephemeral=True)
             return
-        scenes = [scene.value] if scene else list(SCENES)
+        scenes = scenes_for(pack.value if pack else None, scene)
+        if not scenes:
+            await interaction.response.send_message(f"There's no scene called {scene!r}.", ephemeral=True)
+            return
         progress = SimulationProgress(interaction, count_replies(scenes), len(scenes))
         await interaction.response.send_message(progress.text())
         progress.start()
@@ -356,6 +366,11 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
                                   f"{_duration(progress.elapsed())}.", lines)
         finally:
             self._simulating = False
+
+    @simulate.autocomplete("scene")
+    async def _scene_names(self, interaction: discord.Interaction, current: str) -> list[app_commands.Choice[str]]:
+        matches = [name for name in SCENES if current.lower() in name]
+        return [app_commands.Choice(name=name, value=name) for name in matches[:25]]
 
     # ---- personality ----
 
