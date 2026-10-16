@@ -49,6 +49,8 @@ Ask your host whether their rules allow constant CPU use before you buy. Whisker
 
    Whiskers comes online in Discord right away and shows **💤 waking up** as its status until the model is loaded. Later starts skip the downloads.
 
+**Updating:** if your panel pulls the code from GitHub, keep `SYNC_WITH_GIT=true` in `.env` and just restart the server to update. On every start Whiskers makes its code match GitHub exactly, so a file you deleted, edited or uploaded by hand can't block the update. Your `.env`, `data/`, `models/` and `engine/` are never touched. Change `personality.txt` on GitHub rather than on the server, or the server copy gets replaced. The console shows `[update] Code matches ...` when it has synced.
+
 If the console says the prebuilt engine doesn't run on your server (this happens on Alpine-based images), Whiskers builds llama.cpp from source by itself. That takes 10 to 30 minutes and only happens once.
 
 ### On a normal Linux VPS or PC
