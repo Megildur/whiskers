@@ -17,11 +17,11 @@ from .config import Config
 from .db import ChannelRule, Database, GuildSettings, Memory, Profile, StoredMessage
 from .llm import LLMClient, LLMError, parse_json
 from .prompts import (
-    NOTES_HEADER, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
+    REPLY_SCHEMA, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
     reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
 )
 from .scheduler import Scheduler
-from .text import ago, cat_only, clean_reply, keywords
+from .text import ago, cat_only, clean_reply, keywords, parse_reply, repeated_actions
 
 log = logging.getLogger("whiskers.brain")
 
@@ -148,6 +148,7 @@ class Brain:
         self._last_spoke_to: dict[tuple[int, int], float] = {}
         self._last_message: dict[int, int] = {}
         self._owners: dict[int, int] = {}  # guild -> Whiskers' human
+        self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -299,7 +300,8 @@ class Brain:
         return [replace(row, content=row.content[:MESSAGE_CHAR_LIMIT]) for row in rows]
 
     def notes(self, msg: Incoming, kind: str, profiles: list[Profile], memories: list[Memory],
-              can_speak: bool = False, now: float | None = None) -> list[str]:
+              can_speak: bool = False, scene: str | None = None, repeating: list[str] | None = None,
+              now: float | None = None) -> list[str]:
         now = time.time() if now is None else now
         local = datetime.fromtimestamp(now, self._tz)
         hour = local.hour
@@ -319,12 +321,17 @@ class Brain:
             notes.append(line)
         for memory in memories:
             notes.append(f"You remember ({ago(now - memory.created_at)}): {memory.content}")
+        if scene:
+            notes.append(f"Where things stood after your last message: {scene}")
+        if repeating:
+            notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
         latest = msg.content if len(msg.content) <= 300 else msg.content[:300] + "..."
         if kind == "direct" and can_speak:
-            notes.append(f'{msg.author_name} just said or did: "{latest}". Answer them as {self.name}.')
+            notes.append(f'{msg.author_name} just said or did: "{latest}". Answer them as {self.name}, carrying on '
+                         "from what's been happening.")
         elif kind == "direct":
-            notes.append(f'{msg.author_name} just said or did: "{latest}". React to exactly that, the way a cat '
-                         "would, with no words.")
+            notes.append(f'{msg.author_name} just said or did: "{latest}". React to it the way a cat would, with no '
+                         "words, carrying on from what's been happening.")
         else:
             notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                          "Join in the way a cat would.")
@@ -359,19 +366,27 @@ class Brain:
 
         owner = await self._owner_name(msg.guild_id)
         system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak, owner)
-        notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak)
+        names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
+        scene, scene_at = self._scenes.get(msg.channel_id, ("", 0.0))
+        if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
+            scene = ""
+        recent_own = [r.content for r in rows if r.is_self][-6:]
+        repeating = repeated_actions(recent_own, ignore={self.name, *names})
+        notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak, scene, repeating)
         preset = self.cfg.preset if self.cfg.llm_backend == "managed" else None
         messages = reply_messages(system, rows, notes, self.name,
                                   system_in_first_turn=bool(preset and preset.system_in_first_turn))
 
-        names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
-        stops = [f"\n{n}:" for n in names][:12] + ["\n" + NOTES_HEADER.format(name=self.name)[:12]]
         result = await self.llm.chat(
-            messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature, stop=stops,
-            should_stop=lambda text: any(s in text for s in stops), extra=ANTI_REPEAT,
+            messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
+            json_schema=REPLY_SCHEMA, extra=ANTI_REPEAT,
         )
         self.llm.last_reply_seconds = result.seconds
-        text = clean_reply(result.text, self.name, names)
+        scene, reply = parse_reply(result.text)
+        if scene:
+            self._scenes[msg.channel_id] = (scene[:200], time.time())
+            log.debug("Scene in %s: %s", msg.channel_id, scene)
+        text = clean_reply(reply, self.name, names)
         if not journal.can_speak:
             text = cat_only(text)
         return text or self.rng.choice(FALLBACK_ACTIONS)

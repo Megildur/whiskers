@@ -114,7 +114,11 @@ class LLMClient:
                     except ValueError:
                         continue
                     if "error" in chunk:
-                        raise LLMError(str(chunk["error"])[:300])
+                        if not parts:
+                            raise LLMError(str(chunk["error"])[:300])
+                        # e.g. the output was cut off mid-JSON; the caller can still use what arrived
+                        log.warning("The AI engine reported an error after replying: %s", str(chunk["error"])[:200])
+                        break
                     timings = chunk.get("timings") or timings
                     usage = chunk.get("usage")
                     if usage and usage.get("completion_tokens"):

@@ -33,7 +33,7 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         "Q4_K_M", "Mistral-Nemo-Instruct-2407-Q4_K_M.gguf", 7.5,
         "Best at roleplay and following the conversation. Needs about 10 GB of RAM; replies take ~3x longer "
         "than qwen3-4b.",
-        system_in_first_turn=True, temperature=0.75,
+        system_in_first_turn=True, temperature=0.8,
     ),
     "llama3.1-8b": ModelPreset(
         ("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"),
@@ -169,7 +169,7 @@ def load_config() -> Config:
         llm_base_url=_str("LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/"),
         llm_model_name=_str("LLM_MODEL_NAME"),
         llm_api_key=_str("LLM_API_KEY"),
-        max_reply_tokens=_int("MAX_REPLY_TOKENS", 200),
+        max_reply_tokens=_int("MAX_REPLY_TOKENS", 300),
         temperature=_float("TEMPERATURE", MODEL_PRESETS[model].temperature if model in MODEL_PRESETS else 0.85),
         history_messages=max(6, _int("HISTORY_MESSAGES", 24)),
         reflect_every=max(5, _int("REFLECT_EVERY", 25)),

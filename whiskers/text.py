@@ -1,6 +1,7 @@
 """Small text helpers: tidying Discord messages for the model and the model's output for Discord."""
 from __future__ import annotations
 
+import json
 import re
 
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
@@ -129,3 +130,63 @@ def cat_only(text: str) -> str:
         if result.count("*") % 2:
             result += "*"
     return result
+
+
+def _json_string_field(text: str, field: str) -> str | None:
+    """Pull one string field out of JSON that may be cut off before its end."""
+    match = re.search(rf'"{field}"\s*:\s*"((?:[^"\\]|\\.)*)("?)', text)
+    if not match:
+        return None
+    raw = match.group(1)
+    try:
+        return json.loads(f'"{raw}"')
+    except ValueError:
+        return raw.replace('\\"', '"').replace("\\n", "\n")
+
+
+def parse_reply(text: str) -> tuple[str, str]:
+    """Split a {"scene": ..., "reply": ...} answer. Falls back to treating the whole text as the reply."""
+    stripped = text.strip()
+    if not stripped.startswith("{"):
+        return "", stripped
+    try:
+        data = json.loads(stripped)
+        if isinstance(data, dict):
+            return str(data.get("scene") or "").strip(), str(data.get("reply") or "").strip()
+    except ValueError:
+        pass
+    return (_json_string_field(stripped, "scene") or "").strip(), (_json_string_field(stripped, "reply") or "").strip()
+
+
+ACTION_FILLER = STOPWORDS | frozenset("""
+softly gently slowly quickly then their them against into onto with from over away again while before after
+around toward towards each other still just little bit eyes head tail paws paw hand hands
+""".split())
+
+
+def _stem(word: str) -> str:
+    word = re.sub(r"(.)\1+", r"\1", word)  # purrrr -> pur, nuzzles -> nuzles
+    for suffix in ("ing", "es", "ed", "s"):
+        if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+            return word[: -len(suffix)]
+    return word
+
+
+def repeated_actions(messages: list[str], ignore: set[str] = frozenset(), limit: int = 4) -> list[str]:
+    """Words Whiskers keeps using across its recent messages, like "purrs" and "nuzzles"."""
+    counts: dict[str, int] = {}
+    shown: dict[str, str] = {}
+    ignored = {w.lower() for w in ignore}
+    for message in messages:
+        seen = set()
+        for word in re.findall(r"[a-z]{3,}", message.lower()):
+            if word in ACTION_FILLER or word in ignored:
+                continue
+            stem = _stem(word)
+            if stem in seen:
+                continue
+            seen.add(stem)
+            counts[stem] = counts.get(stem, 0) + 1
+            shown.setdefault(stem, word)
+    repeated = sorted((stem for stem, n in counts.items() if n >= 2), key=lambda s: -counts[s])
+    return [shown[stem] for stem in repeated[:limit]]

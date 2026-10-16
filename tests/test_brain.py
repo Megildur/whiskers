@@ -159,9 +159,9 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
     assert notes[0].startswith("It's Sunday night")
     assert "Alice: a good friend you trust. works night shifts." in notes
     assert notes[2] == "You remember (3 days ago): Alice gave Whiskers a laser pointer."
-    assert notes[-1] == 'user1 just said or did: "whiskers". React to exactly that, the way a cat would, with no words.'
+    assert notes[-1].startswith('user1 just said or did: "whiskers". React to it the way a cat would, with no words')
     talking = brain.notes(incoming("whiskers"), "direct", [], [], can_speak=True)
-    assert talking[-1] == 'user1 just said or did: "whiskers". Answer them as Whiskers.'
+    assert talking[-1].startswith('user1 just said or did: "whiskers". Answer them as Whiskers')
 
 
 def test_whiskers_adores_its_human_and_warms_up_to_others(cfg):
@@ -245,6 +245,30 @@ def test_learning_to_talk_needs_time_and_reflections(cfg, tmp_path):
         journal = await brain.db.journal(1)
         assert journal.can_speak
         assert journal.text == "- I'm Whiskers.\n- Brandon taught me to share thoughts."
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        reply = json.dumps({"scene": "Brandon gave me catnip and I'm going wild",
+                            "reply": "*rolls in the catnip, purrs and nuzzles the bag*"})
+        brain = brain_with(cfg, tmp_path, reply)
+        await brain.db.connect()
+        for i, text in enumerate(["*gives catnip*", "good kitty", "*pets*"]):
+            msg = incoming(text, author=8, message_id=700 + i * 10, mentions_me=True, owner_id=8)
+            await brain.observe(msg, GuildSettings(), 0)
+            sent = await brain._compose(msg, "direct")
+            assert sent == "*rolls in the catnip, purrs and nuzzles the bag*"  # the scene note is never posted
+            await brain.record_own_message(msg, 701 + i * 10, sent, 2000.0 + i)
+        last_turn = brain.llm.calls[-1][0][-1]["content"]
+        assert "Where things stood after your last message: Brandon gave me catnip and I'm going wild" in last_turn
+        assert "You've been repeating yourself (" in last_turn and "purrs" in last_turn
+        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply"]
         await brain.db.close()
 
     asyncio.run(go())

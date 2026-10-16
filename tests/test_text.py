@@ -57,3 +57,20 @@ def test_cat_only_drops_speech_hidden_in_actions_and_plain_sentences():
     assert cat_only('*thinks: you are weird* *licks paw* *says "hello"*') == "*licks paw*"
     assert cat_only("Hello there, I am a cat.") == ""
     assert cat_only("Mr. Smith is here") == ""
+
+
+def test_parse_reply_reads_scene_and_reply_even_when_cut_off():
+    from whiskers.text import parse_reply
+
+    assert parse_reply('{"scene": "on Brandon\'s lap", "reply": "*kneads*"}') == ("on Brandon's lap", "*kneads*")
+    assert parse_reply('{"scene": "zoomies", "reply": "*skids into the \\"wall') == ("zoomies", '*skids into the "wall')
+    assert parse_reply("*plain text*") == ("", "*plain text*")
+
+
+def test_repeated_actions_finds_what_whiskers_keeps_doing():
+    from whiskers.text import repeated_actions
+
+    recent = ["*nuzzles against Brandon's hand, purrs softly* mrrp", "*purrs loudly, starts kneading*",
+              "*nuzzles their hand, meowing softly*", "*flops over dramatically*"]
+    assert repeated_actions(recent, ignore={"Brandon"}) == ["nuzzles", "purrs"]
+    assert repeated_actions(["*zoomies*", "*naps*"]) == []
