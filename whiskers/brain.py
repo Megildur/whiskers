@@ -383,11 +383,12 @@ class Brain:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
         latest = msg.content if len(msg.content) <= 300 else msg.content[:300] + "..."
         feeling = f'Your "feeling" is about {msg.author_name}.'
+        said = "replied to your message" if msg.replies_to_me and not msg.mentions_me else "just said or did"
         if kind == "direct" and can_speak:
-            notes.append(f'{msg.author_name} just said or did: "{latest}". Answer them as {self.name}, carrying on '
+            notes.append(f'{msg.author_name} {said}: "{latest}". Answer them as {self.name}, carrying on '
                          f"from what's been happening. {feeling}")
         elif kind == "direct":
-            notes.append(f'{msg.author_name} just said or did: "{latest}". React to it the way a cat would, with no '
+            notes.append(f'{msg.author_name} {said}: "{latest}". React to it the way a cat would, with no '
                          f"words, carrying on from what's been happening. {feeling}")
         else:
             notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '

@@ -86,7 +86,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers chattiness <percent> [channel]` | Manage Server | How often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, discord, or all (67 scenes, over an hour). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
+| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), all-discord (206 scenes, about 2½ hours) or all (255 scenes, about 3½ hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -164,9 +164,25 @@ The commented `.env.example` lists them all. The ones you might change:
 
 ## Testing changes
 
-`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 67 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, and everyday Discord chat), so a pack takes a few minutes to about 15.
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 255 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, and a lot of everyday Discord chat), so most packs take 5 to 25 minutes.
 
-The **feelings** pack starts some scenes with history (Angel almost loved enough to be chosen, Tearyu having pulled its tail before) and skips ahead in time ("--- The next day ---"), so only what Whiskers remembers about people carries over. The **discord** pack is ordinary server chat: people talking among themselves about games and memes, pings, spam, arguments and bot commands. Whiskers reads every line, sometimes chimes in (marked "chimes in") and answers when someone talks to it.
+The **feelings** pack starts some scenes with history (Angel almost loved enough to be chosen, Tearyu having pulled its tail before) and skips ahead in time ("--- The next day ---"), so only what Whiskers remembers about people carries over. Ordinary server chat is where Whiskers spends most of its life, so most scenes are Discord packs (all of them together: `all-discord`):
+
+| Pack | What's in it |
+|------|--------------|
+| `discord` | A sampler of everything below |
+| `discord-hello` | Good mornings, goodnights, coming home, leaving for school, AFK and back |
+| `discord-to-him` | Talking straight to Whiskers: questions, compliments, insults, tricks, "speak", homework, advice, secrets, people replying to his messages |
+| `discord-chatter` | People talking among themselves about games, movies, food, work, school, pets, birds and fish tanks, good and bad news |
+| `discord-media` | Pictures, GIFs, stickers, voice clips, videos, custom emoji, spoilers, polls, code and links |
+| `discord-gaming` | Looking for a group, losing streaks, wins, game night, streams, lag |
+| `discord-chaos` | Ping storms, scam links, trolls, arguments a mod breaks up, bullying, someone claiming to be his owner, jailbreak attempts |
+| `discord-server` | New members, rules, giveaways, holidays, server boosts, counting, dead chat, Whiskers as mascot |
+| `discord-people` | How he treats people in chat: venting friends, a busy human, a second cat, old grudges, favourites coming online |
+| `discord-odd` | Punctuation only, other languages, typos of his name, other bots' commands, long rants, "are you ChatGPT" |
+| `discord-busy` | Long, noisy stretches of a busy channel (10 to 16 messages) with Whiskers pulled in partway |
+
+Lines are written the way people really type, and links, custom emoji and pings go through the same clean-up as real messages (a Tenor link reaches Whiskers as "[sends a gif: cat vibing]"). Whiskers reads every line, sometimes chimes in (marked "chimes in") and answers when someone pings him, says his name or replies to his message (marked "replying to Whiskers").
 
 Each line of the transcript shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. Under each reply it shows how Whiskers felt about the person and its affection for them, and marks when it chooses someone or stops counting them as one of its people. Replies are checked automatically for stock fallback actions, human words that had to be removed (which words, and what the model actually wrote), "I/my" in actions, dog behaviour, repetition and overly long replies, with a count at the end. The scenes live in `whiskers/simulate.py`. Real chats wait while a simulation reply is being written, so run it when the server is quiet.
 

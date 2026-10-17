@@ -3,8 +3,13 @@ from __future__ import annotations
 
 import json
 import re
+from urllib.parse import urlparse
 
 CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
+DISCORD_TIME = re.compile(r"<t:\d+(?::\w)?>")
+URL = re.compile(r"https?://[^\s<>]+")
+IMAGE_FILE = re.compile(r"\.(png|jpe?g|webp|bmp)$", re.I)
+VIDEO_FILE = re.compile(r"\.(mp4|mov|webm)$", re.I)
 WORD = re.compile(r"[a-z0-9']{3,}")
 SPEAKER_LABEL = re.compile(r"^\**\s*([^\s:*][^:\n*]{0,40}?)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*")
 
@@ -30,9 +35,44 @@ much most own same such only other again still ever even well back make made kno
 """.split())
 
 
+def describe_link(url: str) -> str:
+    """A link as what people see in Discord: "[sends a gif: cat vibing]" instead of a long URL."""
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
+    path = parsed.path.rstrip("/")
+    slug = path.rsplit("/", 1)[-1]
+    if host.endswith("tenor.com") or host.endswith("giphy.com") or slug.lower().endswith(".gif"):
+        if "/view/" in path:  # tenor.com/view/cat-vibing-gif-18913937
+            words = re.sub(r"-gif-\d+$", "", slug)
+        elif "/gifs/" in path and "-" in slug:  # giphy.com/gifs/cat-funny-3o7TKSjRrfIPjeiVyM
+            words = slug.rsplit("-", 1)[0]
+        else:
+            words = ""
+        words = " ".join(words.replace("-", " ").split())
+        return f"[sends a gif: {words}]" if words else "[sends a gif]"
+    if host.endswith("discordapp.com") or host.endswith("discordapp.net"):
+        if IMAGE_FILE.search(path):
+            return "[sends a picture]"
+        if VIDEO_FILE.search(path):
+            return "[sends a video]"
+    if host in ("youtube.com", "youtu.be", "music.youtube.com"):
+        return "[shares a YouTube video]"
+    if host.endswith("tiktok.com"):
+        return "[shares a TikTok]"
+    if host in ("twitter.com", "x.com", "fxtwitter.com", "vxtwitter.com"):
+        return "[shares a tweet]"
+    if host.endswith("twitch.tv"):
+        return "[shares a Twitch stream]"
+    if host.endswith("spotify.com"):
+        return "[shares a song]"
+    return f"[shares a link: {host}]" if host else "[shares a link]"
+
+
 def readable(content: str) -> str:
     """Discord markup the model doesn't need to see, made plain."""
     content = CUSTOM_EMOJI.sub(r":\1:", content)
+    content = DISCORD_TIME.sub("[a time]", content)
+    content = URL.sub(lambda m: describe_link(m.group(0)), content)
     lines = (" ".join(line.split()) for line in content.splitlines())
     return "\n".join(line for line in lines if line)
 

@@ -162,6 +162,8 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
     assert notes[-1].startswith('user1 just said or did: "whiskers". React to it the way a cat would, with no words')
     talking = brain.notes(incoming("whiskers"), "direct", [], [], can_speak=True)
     assert talking[-1].startswith('user1 just said or did: "whiskers". Answer them as Whiskers')
+    replied = brain.notes(incoming("LMAO 💀", replies_to_me=True), "direct", [], [])
+    assert replied[-1].startswith('user1 replied to your message: "LMAO 💀". React to it the way a cat would')
 
 
 def test_whiskers_adores_its_human_and_warms_up_to_others(cfg):

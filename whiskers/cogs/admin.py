@@ -12,7 +12,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..llm import LLMError
-from ..simulate import PACKS, SCENES, Step, count_replies, run_scenes, scenes_for
+from ..simulate import GROUPS, PACKS, SCENES, Step, count_replies, run_scenes, scenes_for
 from ..text import person_name
 from ..ui import ask_to_confirm, embed
 
@@ -327,13 +327,17 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         await interaction.response.send_message(embed=result, ephemeral=True)
 
     @app_commands.command(name="simulate", description="Play test scenes with Whiskers and post the transcript")
-    @app_commands.describe(pack="Which set of scenes to play (default: core). 'all' takes over an hour.",
+    @app_commands.describe(pack="Which set of scenes to play (default: core). The big ones take hours.",
                            scene="Play just one scene instead of a pack")
     @app_commands.choices(pack=[
         app_commands.Choice(name=f"{name} ({len(scenes)} scene{'s' if len(scenes) != 1 else ''}, "
                                  f"~{count_replies(list(scenes)) * 20 // 60 + 1} min)",
                             value=name)
         for name, scenes in PACKS.items()
+    ] + [
+        app_commands.Choice(name=f"{group} ({len(scenes_for(group))} scenes, "
+                                 f"~{count_replies(scenes_for(group)) * 20 // 60} min)", value=group)
+        for group in GROUPS
     ] + [app_commands.Choice(name=f"all ({len(SCENES)} scenes, ~{count_replies(list(SCENES)) * 20 // 60} min)",
                              value="all")])
     async def simulate(self, interaction: discord.Interaction, pack: Optional[app_commands.Choice[str]] = None,

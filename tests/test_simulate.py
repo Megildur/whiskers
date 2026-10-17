@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from whiskers.db import Database
 from whiskers.llm import ChatResult
 from whiskers.scheduler import Scheduler
-from whiskers.simulate import PACKS, SCENES, SETUPS, checks, count_replies, run_scenes, scenes_for, step_parts
+from whiskers.simulate import (
+    GROUPS, PACKS, SCENES, SETUPS, checks, count_replies, run_scenes, scenes_for, step_parts,
+)
 
 
 class FakeLLM:
@@ -31,6 +33,9 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         assert "===== catnip =====" in transcript and "Brandon: Here have some catnip *gives catnip*" in transcript
         assert "(scene: scene 1)" in transcript and "Whiskers: *pounces on Angel's feet*" in transcript
         assert "Milo: !play lofi hip hop\nAngel: this song slaps\n" in transcript  # read, not answered
+        assert "Brandon (replying to Whiskers): *drops onto the couch*" in transcript
+        assert "Milo: [sends a gif: cat vibing cat jam]" in transcript  # links arrive like real messages
+        assert "Rin: hi... i'm new here" in transcript
         assert "Whiskers (chimes in): *pounces" in transcript
         assert "--- The next day ---" in transcript
         assert "(before this scene: Angel +52 (loved belly rubs, loved salmon))" in transcript
@@ -134,22 +139,39 @@ def test_a_stuck_reply_stops_the_simulation_with_a_clear_message(cfg, tmp_path, 
 def test_every_scene_line_is_valid_for_both_genders():
     from whiskers.prompts import PRONOUNS
 
+    people = {"owner", "friend", "new", "regular", "mod", "shy"}
     for pronouns in PRONOUNS.values():
         for name, steps in SCENES.items():
             assert step_parts(steps[0])[0] != "time", name
+            assert count_replies([name]) > 0, f"{name}: Whiskers never gets to answer"
+            whiskers_spoke = False
             for step in steps:
                 who, template, how = step_parts(step)
-                assert len(step) in (2, 3) and how in ("direct", "chat", "chime"), name
-                assert who in ("owner", "friend", "new", "regular", "time"), name
+                assert len(step) in (2, 3) and how in ("direct", "reply", "chat", "chime"), name
+                assert who in people | {"time"}, name
                 assert "{" not in template.format(name="Whiskers", owner="Brandon", **pronouns), name
-                if how != "direct":
+                if how in ("chat", "chime"):
                     assert "{name}" not in template, f"{name}: saying the cat's name would be talking to it"
+                if how == "reply":
+                    assert whiskers_spoke, f"{name}: a reply needs a message from Whiskers to reply to"
+                if who == "time":
+                    whiskers_spoke = False  # a fresh room
+                elif how != "chat":
+                    whiskers_spoke = True
     for name, setup in SETUPS.items():
-        assert name in SCENES and set(setup) <= {"owner", "friend", "new", "regular"}, name
+        assert name in SCENES and set(setup) <= people, name
+
+
+def test_scene_names_are_unique_across_packs():
+    declared = [name for pack in PACKS.values() for name in pack]
+    assert len(declared) == len(set(declared)) == len(SCENES)
 
 
 def test_choosing_scenes():
     assert scenes_for(None) == list(PACKS["core"])
+    discord = scenes_for("all-discord")
+    assert GROUPS["all-discord"][0] == "discord" and "gm-crowd" in discord and "catnip" not in discord
+    assert len(discord) == sum(len(PACKS[pack]) for pack in GROUPS["all-discord"])
     assert scenes_for("scary") == list(PACKS["scary"])
     assert scenes_for("all") == list(SCENES)
     assert scenes_for("core", "vacuum") == ["vacuum"]
