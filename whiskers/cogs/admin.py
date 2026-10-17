@@ -310,7 +310,11 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             brain_lines.append(f"Last reply took {llm.last_reply_seconds:.0f}s")
         brain_lines.append(f"Replies waiting: {bot.scheduler.pending_replies}")
         settings = await bot.db.guild_settings(interaction.guild_id)
-        result.add_field(name="Human", value=f"<@{settings.owner_id or interaction.guild.owner_id}>", inline=False)
+        chosen = await bot.db.chosen_people(interaction.guild_id)
+        human = f"<@{settings.owner_id or interaction.guild.owner_id}>"
+        if chosen:
+            human += "\nAlso chose: " + ", ".join(f"<@{p.user_id}>" for p in chosen)
+        result.add_field(name="Human", value=human, inline=False)
         result.add_field(name="Brain", value="\n".join(brain_lines), inline=False)
         counts = await bot.db.counts(interaction.guild_id)
         journal = await bot.db.journal(interaction.guild_id)
@@ -323,7 +327,7 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         await interaction.response.send_message(embed=result, ephemeral=True)
 
     @app_commands.command(name="simulate", description="Play test scenes with Whiskers and post the transcript")
-    @app_commands.describe(pack="Which set of scenes to play (default: core). 'all' takes about 45 minutes.",
+    @app_commands.describe(pack="Which set of scenes to play (default: core). 'all' takes over an hour.",
                            scene="Play just one scene instead of a pack")
     @app_commands.choices(pack=[
         app_commands.Choice(name=f"{name} ({len(scenes)} scene{'s' if len(scenes) != 1 else ''}, "

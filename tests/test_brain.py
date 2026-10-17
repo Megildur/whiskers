@@ -174,6 +174,41 @@ def test_whiskers_adores_its_human_and_warms_up_to_others(cfg):
     assert any(n.startswith("Angel: new to you") and "friendly" in n for n in notes)
 
 
+def test_how_whiskers_treats_people_follows_how_they_treated_it(cfg):
+    from whiskers.brain import relationship
+    from whiskers.db import Feeling, Profile
+
+    assert relationship(40, affection=-20).startswith("you don't trust them")
+    assert relationship(40, affection=-50).startswith("you can't stand them")
+    assert relationship(3, affection=40).startswith("you really like them")
+    assert relationship(3, affection=40, chosen=True).startswith("one of your chosen people")
+    assert relationship(3, is_owner=True, affection=-50).startswith("your human")
+
+    brain = make_brain(cfg)
+    rough = Profile(2, "Tearyu", chats=3, affection=-20,
+                    feelings=[Feeling("a treat", "liked", 0.0), Feeling("tail pulling", "hated", 86400.0 - 600)])
+    notes = brain.notes(incoming("hi kitty", author=2), "direct", [rough], [], now=86400.0,
+                        news=["Tearyu did something"])
+    line = next(n for n in notes if n.startswith("Tearyu:"))
+    assert "you don't trust them" in line
+    assert line.endswith("Things they've done: tail pulling (you hated it, 10 minutes ago); "
+                         "a treat (you liked it, 1 day ago).")
+    assert "Tearyu did something" in notes
+    assert notes[-1].endswith('Your "feeling" is about user2.')
+
+
+def test_people_whiskers_likes_get_more_chime_ins(cfg):
+    from whiskers.db import Profile
+
+    brain = make_brain(cfg)
+    msg = incoming("nice weather", author=2, owner_id=1)
+    assert brain.fondness(msg, Profile(2, "Angel", chosen=True)) == 1.5
+    assert brain.fondness(msg, Profile(2, "Tearyu", affection=-30)) == 0.5
+    assert brain.fondness(incoming("hi", author=1, owner_id=1), None) == 1.5
+    assert brain.decide(msg, GuildSettings(), 40, fondness=1.5).reply == "ambient"  # 40% x 1.5 beats the 50% roll
+    assert brain.decide(msg, GuildSettings(), 40).reply is None
+
+
 # ---- speaking: just a cat until the server teaches it ----
 
 class FakeLLM:
@@ -268,7 +303,71 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
         last_turn = brain.llm.calls[-1][0][-1]["content"]
         assert "Where things stood after your last message: Brandon gave me catnip and I'm going wild" in last_turn
         assert "You've been repeating yourself (" in last_turn and "purrs" in last_turn
-        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply"]
+        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "feeling", "about", "reply"]
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_feelings_add_up_until_whiskers_chooses_someone_and_hurt_undoes_it(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, "")
+        await brain.db.connect()
+        msg = incoming("*gives you salmon*", author=5, mentions_me=True, owner_id=8)
+        await brain.observe(msg, GuildSettings(), 0)
+        await brain.db.conn.execute("UPDATE profiles SET chats = 20, affection = 50")
+
+        brain.llm.reply = json.dumps({"scene": "salmon!", "feeling": "loved", "about": "salmon.", "reply": "*eats*"})
+        await brain.compose(msg, "direct")
+        assert brain.last_feeling(10) == ("loved", "salmon", 56.0, None)
+        await brain.compose(msg, "direct")  # the same thing again replaces the old memory of it
+        angel = await brain.db.profile(1, 5)
+        assert (angel.affection, angel.chosen, [f.about for f in angel.feelings]) == (62.0, True, ["salmon"])
+        assert brain.last_feeling(10)[3] == "chosen"
+
+        brain.llm.reply = json.dumps({"scene": "x", "feeling": "neutral", "about": "", "reply": "*naps*"})
+        await brain.compose(msg, "direct")
+        last_turn = brain.llm.calls[-1][0][-1]["content"]
+        system = brain.llm.calls[-1][0][0]["content"]
+        assert "You've just decided that user5 is one of your people now" in last_turn
+        assert "You've also chosen user5 as your person" in system
+        assert (await brain.db.profile(1, 5)).affection == 62.0  # neutral changes nothing
+
+        brain.llm.reply = json.dumps({"scene": "x", "feeling": "hated", "about": "water spray", "reply": "*hisses*"})
+        await brain.compose(msg, "ambient")  # chiming in on someone's chat doesn't count
+        assert (await brain.db.profile(1, 5)).affection == 62.0 and brain.last_feeling(10) is None
+        await brain.compose(msg, "direct")
+        await brain.compose(msg, "direct")
+        angel = await brain.db.profile(1, 5)
+        assert (angel.affection, angel.chosen) == (22.0, False)
+        assert brain.last_feeling(10)[3] == "dropped"
+        assert [f.about for f in angel.feelings] == ["salmon", "water spray"]
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_whiskers_human_is_never_chosen_and_a_repeated_sound_is_left_out(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        reply = json.dumps({"scene": "x", "feeling": "loved", "about": "tuna", "reply": "*eats* MRRP!"})
+        brain = brain_with(cfg, tmp_path, reply)
+        await brain.db.connect()
+        sent = []
+        for i in range(12):
+            msg = incoming("*gives tuna*", author=8, message_id=900 + i * 10, mentions_me=True, owner_id=8)
+            await brain.observe(msg, GuildSettings(), 0)
+            sent.append(await brain.compose(msg, "direct"))
+            await brain.record_own_message(msg, 901 + i * 10, sent[-1], 3000.0 + i)
+        human = await brain.db.profile(1, 8)
+        assert human.affection == 72.0 and not human.chosen
+        assert sent[:3] == ["*eats* MRRP!", "*eats*", "*eats*"]  # not the same sound every time
+        assert sent[3] == "*eats* MRRP!"
         await brain.db.close()
 
     asyncio.run(go())

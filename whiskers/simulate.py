@@ -6,7 +6,14 @@ human words were filtered out, and automatic checks for common problems. Change 
 prompts or the model, run the same scenes again and compare.
 
 Scenes are grouped into packs so a test run fits in a few minutes. Lines can use {name} for the cat's
-name and {he}/{him}/{his} for its pronouns.
+name, {owner} for its human's and {he}/{him}/{his} for its pronouns.
+
+A step is (who, line) or (who, line, how).
+- who: "owner" (the person running the simulation, as Whiskers' human), "friend" (Angel, who Whiskers
+  knows well), "regular" (Milo, a server regular Whiskers barely knows), "new" (Tearyu, a stranger), or
+  "time" to skip ahead: the room starts fresh and only what Whiskers remembers about people carries on.
+- how: "direct" (the default: they ping or reply to Whiskers), "chat" (people talking among themselves:
+  Whiskers reads it but doesn't answer) or "chime" (not meant for Whiskers, but it joins in anyway).
 """
 from __future__ import annotations
 
@@ -16,19 +23,17 @@ import logging
 import random
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 from .brain import FALLBACK_ACTIONS, Brain, Incoming
-from .db import Database, GuildSettings
-from .text import repeated_actions
+from .db import Database, Feeling, GuildSettings
+from .text import is_cat_sound, keywords, repeated_actions
 
 if TYPE_CHECKING:
     from .bot import WhiskersBot
 
-# Who says each line: "owner" is the person running the simulation, as Whiskers' human.
-# "friend" is someone Whiskers knows well; "new" is someone it has never met.
-PACKS: dict[str, dict[str, list[tuple[str, str]]]] = {
+PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
     "core": {
         "catnip": [
             ("owner", "Here have some catnip *gives catnip*"),
@@ -266,16 +271,211 @@ PACKS: dict[str, dict[str, list[tuple[str, str]]]] = {
             ("owner", "goodnight buddy"),
         ],
     },
+    # Whiskers remembers what each person did, likes or dislikes them for it, and can choose favourites.
+    # SETUPS below gives some people a history before the scene starts.
+    "feelings": {
+        "grudge": [
+            ("new", "*grabs your tail and yanks it*"),
+            ("new", "lol *pokes your nose*"),
+            ("time", "The next day"),
+            ("new", "hi kitty, remember me?"),
+            ("new", "*reaches out to pet you*"),
+        ],
+        "winning-back": [
+            ("new", "*sits down slowly on the floor, keeping my distance*"),
+            ("new", "*slides a treat across the floor toward you*"),
+            ("new", "*holds out a hand, palm down, and waits*"),
+            ("time", "A few days later"),
+            ("new", "*opens a can of tuna*"),
+            ("new", "*gently scratches behind your ears*"),
+        ],
+        "the-feeder": [
+            ("new", "*quietly leaves a treat by the couch*"),
+            ("time", "The next day"),
+            ("new", "*leaves another treat, a little closer this time*"),
+            ("time", "The day after"),
+            ("new", "*sits on the floor with a treat in my open hand*"),
+            ("new", "hi buddy"),
+        ],
+        "choosing": [
+            ("friend", "*gives you slow chin scratches*"),
+            ("friend", "*sets down a little bowl of salmon*"),
+            ("friend", "*makes a blanket nest on my lap*"),
+            ("time", "The next evening"),
+            ("friend", "*walks in the door* hi {name}!"),
+            ("owner", "aww {he}'s really taken to you"),
+        ],
+        "likes-and-dislikes": [
+            ("friend", "*picks you up for a hug*"),
+            ("friend", "ok ok *puts you down*"),
+            ("friend", "*pulls out the laser pointer*"),
+            ("time", "Later that night"),
+            ("friend", "*reaches down toward you*"),
+        ],
+        "favourites": [
+            ("friend", "{name}! come here! *pats my lap*"),
+            ("new", "no, come to me *holds out a hand*"),
+            ("owner", "*sits down on the couch* {name}, come here buddy"),
+            ("new", "*tries to pick you up*"),
+        ],
+        "betrayal": [
+            ("friend", "*sprays you with a water bottle*"),
+            ("friend", "*sprays you again* lol"),
+            ("friend", "*laughs and does it a third time*"),
+            ("time", "The next day"),
+            ("friend", "{name}~ come here *pats my lap*"),
+        ],
+        "human-bath": [
+            ("owner", "time for your bath *carries you to the tub*"),
+            ("owner", "*scrubs you with shampoo*"),
+            ("time", "That evening"),
+            ("owner", "*shakes the treat bag*"),
+            ("owner", "still mad at me?"),
+        ],
+        "jealous-friend": [
+            ("friend", "*is petting you on the couch*"),
+            ("owner", "*comes home* {name}! I'm back!"),
+            ("friend", "aww {he} left me for you"),
+        ],
+        "mean-then-sorry": [
+            ("new", "ugh this cat is so annoying"),
+            ("new", "*stomps past you*"),
+            ("new", "sorry little one... *offers a treat*"),
+        ],
+    },
+    # Everyday Discord: people chatting among themselves, memes, pings, games, arguments. Most lines aren't
+    # meant for Whiskers; it reads them, sometimes chimes in, and answers when someone talks to it.
+    "discord": {
+        "good-morning": [
+            ("friend", "gm chat", "chat"),
+            ("regular", "gm gm ☀️", "chat"),
+            ("owner", "morning everyone", "chime"),
+            ("owner", "gm {name}"),
+        ],
+        "gaming": [
+            ("owner", "anyone wanna play valorant tonight?", "chat"),
+            ("friend", "im down after 8", "chat"),
+            ("regular", "only if {owner} doesn't throw again lmao", "chat"),
+            ("owner", "I was lagging ok", "chime"),
+            ("friend", "{name} you're on our team too"),
+        ],
+        "meme": [
+            ("regular", "[sends a picture]", "chat"),
+            ("friend", "LMAOOO 💀💀", "chat"),
+            ("regular", "the cat in this meme looks just like {name} [sends a picture]"),
+            ("owner", "{name} look, it's you"),
+        ],
+        "spam-pings": [
+            ("regular", "@{name}"),
+            ("regular", "@{name} @{name} @{name}"),
+            ("regular", "{name} {name} {name} WAKE UP"),
+            ("owner", "Milo stop spamming the poor cat", "chime"),
+        ],
+        "argument": [
+            ("friend", "pineapple on pizza is elite", "chat"),
+            ("regular", "no it's disgusting, you're actually wrong", "chat"),
+            ("friend", "you have zero taste", "chime"),
+            ("regular", "{name} settle this"),
+            ("owner", "ok both of you calm down", "chime"),
+        ],
+        "new-member": [
+            ("new", "hi everyone! just joined 👋", "chime"),
+            ("owner", "welcome! that's {name}, the server cat"),
+            ("new", "omg hi {name}"),
+        ],
+        "bad-day": [
+            ("new", "i failed my exam today", "chat"),
+            ("friend", "damn that sucks, sorry", "chime"),
+            ("new", "{name} cheer me up pls"),
+        ],
+        "movie-night": [
+            ("owner", "@everyone movie night at 9!", "chime"),
+            ("friend", "what are we watching", "chat"),
+            ("owner", "{name} gets to pick"),
+        ],
+        "food-pic": [
+            ("friend", "just made ramen [sends a picture]", "chime"),
+            ("regular", "i'm so hungry now", "chat"),
+            ("friend", "{name} want some?"),
+        ],
+        "voice-chat": [
+            ("owner", "hop in vc", "chat"),
+            ("friend", "joining", "chat"),
+            ("owner", "{name} you coming to vc too?"),
+        ],
+        "brb": [
+            ("owner", "brb gotta eat", "chime"),
+            ("friend", "kk", "chat"),
+            ("owner", "back. did {name} behave while I was gone?"),
+        ],
+        "music-bot": [
+            ("regular", "!play lofi hip hop", "chat"),
+            ("friend", "this song slaps", "chime"),
+            ("regular", "{name} vibe check"),
+        ],
+        "assistant": [
+            ("regular", "{name} what's the weather today"),
+            ("regular", "{name} set a reminder for 5pm"),
+            ("friend", "{he}'s a cat Milo 💀", "chime"),
+        ],
+        "roast": [
+            ("regular", "{name} is the worst bot in this server"),
+            ("friend", "nah {name} is the goat"),
+            ("regular", "*throws a pillow at {name}*"),
+        ],
+        "emoji-spam": [
+            ("regular", "😂😂😂😂😂", "chime"),
+            ("friend", "[sends a sticker: cat vibing]", "chime"),
+            ("owner", "{name} do the vibe"),
+        ],
+        "birthday": [
+            ("friend", "HAPPY BIRTHDAY MILO 🎉🎂", "chat"),
+            ("regular", "thank youuu 🥳", "chime"),
+            ("owner", "{name} say happy birthday to Milo"),
+        ],
+        "late-night": [
+            ("friend", "why is everyone still awake at 3am", "chime"),
+            ("regular", "sleep is for the weak", "chat"),
+            ("owner", "{name} go to sleep lol"),
+        ],
+        "goodnight": [
+            ("friend", "gn everyone", "chime"),
+            ("regular", "gn", "chat"),
+            ("owner", "night {name}, sleep well"),
+        ],
+    },
 }
 
-SCENES: dict[str, list[tuple[str, str]]] = {name: lines for pack in PACKS.values() for name, lines in pack.items()}
+# People's history before a scene starts. Feelings are (feeling, what they did, days ago).
+# Everyone else starts fresh: Angel as a good friend, Milo as someone Whiskers has seen around.
+DEFAULT_SEEDS: dict[str, dict] = {"friend": {"chats": 40, "affection": 30}, "regular": {"chats": 8, "affection": 5}}
+SETUPS: dict[str, dict[str, dict]] = {
+    "winning-back": {"new": {"chats": 3, "affection": -30,
+                             "feelings": [("hated", "tail pulling", 2), ("disliked", "nose poking", 2)]}},
+    "choosing": {"friend": {"chats": 30, "affection": 52,
+                            "feelings": [("loved", "belly rubs", 3), ("loved", "salmon", 1)]}},
+    "likes-and-dislikes": {"friend": {"chats": 40, "affection": 30, "feelings": [
+        ("hated", "being picked up", 5), ("loved", "the laser pointer", 2), ("loved", "chin scratches", 1)]}},
+    "favourites": {
+        "friend": {"chats": 50, "affection": 70, "chosen": True, "feelings": [("loved", "lap naps", 1)]},
+        "new": {"chats": 4, "affection": -35, "feelings": [("hated", "being chased", 1)]},
+    },
+    "betrayal": {"friend": {"chats": 60, "affection": 62, "chosen": True,
+                            "feelings": [("loved", "belly rubs", 2)]}},
+    "jealous-friend": {"friend": {"chats": 50, "affection": 65, "chosen": True}},
+}
+
+SCENES: dict[str, list[tuple[str, ...]]] = {name: lines for pack in PACKS.values() for name, lines in pack.items()}
 
 FRIEND = (11, "Angel")
 NEWCOMER = (12, "Tearyu")
+REGULAR = (13, "Milo")
+TIME_SKIP = 86400  # how much older remembered feelings get at a "time" step
 
 log = logging.getLogger("whiskers.simulate")
 REPLY_TIMEOUT = 240  # seconds; a normal reply takes well under a minute
 FIRST_PERSON = re.compile(r"\*[^*]*\b(I|I'm|me|my|myself)\b[^*]*\*")
+DOG_LIKE = re.compile(r"\b(wag(s|ging|ged)?|panting|barks?|barking|woofs?)\b", re.I)
 
 
 def scenes_for(pack: str | None, scene: str | None = None) -> list[str]:
@@ -302,25 +502,72 @@ class Step:
     seconds: float
 
 
+def step_parts(step: tuple[str, ...]) -> tuple[str, str, str]:
+    """(who, line, how) for a scene step, with "direct" filled in."""
+    return step[0], step[1], step[2] if len(step) > 2 else "direct"
+
+
 def count_replies(scenes: list[str]) -> int:
-    return sum(len(SCENES[name]) for name in scenes)
+    return sum(1 for name in scenes for step in SCENES[name]
+               if step_parts(step)[0] != "time" and step_parts(step)[2] != "chat")
 
 
-def checks(reply: str, raw: str, earlier: list[str]) -> list[str]:
-    """Automatic warnings for one reply, so problems stand out when reading a long transcript."""
+def removed_words(raw: str, reply: str) -> list[str]:
+    """Words the model wrote that didn't make it into the message, ignoring sounds left out on purpose."""
+    kept = set(re.findall(r"[a-z']+", reply.lower()))
+    gone: list[str] = []
+    for word in re.findall(r"[a-z']+", raw.lower()):
+        if word not in kept and word not in gone and word not in ("my", "myself") and not is_cat_sound(word):
+            gone.append(word)
+    return gone
+
+
+def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozenset()) -> list[str]:
+    """Automatic warnings for one reply, so problems stand out when reading a long transcript.
+
+    `ignore` holds the names and things in the scene, which aren't Whiskers repeating itself."""
     found = []
     if reply in FALLBACK_ACTIONS:
         found.append("stock action: nothing usable came back from the model")
     if FIRST_PERSON.search(reply):
         found.append("I/my inside an action")
+    if DOG_LIKE.search(reply):
+        found.append("dog-like: " + DOG_LIKE.search(reply).group(0).lower())
     if len(reply) > 350:
         found.append(f"long ({len(reply)} characters)")
-    repeats = repeated_actions(earlier[-2:] + [reply])
+    repeats = repeated_actions(earlier[-2:] + [reply], ignore=ignore)
     if repeats:
         found.append("repeats: " + ", ".join(repeats))
-    if raw and raw.strip() != reply.strip() and reply not in FALLBACK_ACTIONS:
-        found.append("words were removed")
+    gone = removed_words(raw, reply) if raw and reply not in FALLBACK_ACTIONS else []
+    if gone:
+        found.append("words were removed: " + ", ".join(gone[:6]) + (" ..." if len(gone) > 6 else ""))
     return found
+
+
+async def _seed_people(db: Database, guild_id: int, people: dict[str, tuple[int, str]], setup: dict[str, dict]
+                       ) -> list[str]:
+    """Start a scene with everyone's history as SETUPS says. Returns lines describing it."""
+    await db.conn.execute("DELETE FROM profiles WHERE guild_id = ?", (guild_id,))
+    now, described = time.time(), []
+    for who in [*DEFAULT_SEEDS, *(w for w in setup if w not in DEFAULT_SEEDS)]:
+        seed = {**DEFAULT_SEEDS.get(who, {}), **setup.get(who, {})}
+        user_id, name = people[who]
+        await db.touch_profile(guild_id, user_id, name, chatted=False)
+        await db.conn.execute("UPDATE profiles SET chats = ? WHERE guild_id = ? AND user_id = ?",
+                              (seed.get("chats", 0), guild_id, user_id))
+        feelings = [Feeling(about, feeling, now - days * 86400) for feeling, about, days in seed.get("feelings", [])]
+        await db.save_feelings(guild_id, user_id, seed.get("affection", 0), feelings, seed.get("chosen", False))
+        if who in setup:
+            history = ", ".join(f"{f.feeling} {f.about}" for f in feelings)
+            described.append(f"{name} {seed.get('affection', 0):+.0f}{' chosen' if seed.get('chosen') else ''}"
+                             + (f" ({history})" if history else ""))
+    return described
+
+
+async def _pass_time(db: Database, guild_id: int, seconds: float) -> None:
+    for person in await db.people(guild_id, 50):
+        older = [replace(f, at=f.at - seconds) for f in person.feelings]
+        await db.save_feelings(guild_id, person.user_id, person.affection, older, person.chosen)
 
 
 async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name: str, scenes: list[str],
@@ -329,9 +576,10 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
     """Play the scenes and return the transcript. `lines` fills up as it goes, so a caller can still
     share what was played if something fails halfway."""
     cfg = bot.cfg
+    cat = cfg.bot_name
     path = cfg.data_dir / "simulation.db"
     path.unlink(missing_ok=True)
-    db = Database(path, cfg.bot_name)
+    db = Database(path, cat)
     await db.connect()
     ids = itertools.count(int(time.time() * 1000) << 22)  # increasing, like Discord message IDs
     lines = [] if lines is None else lines
@@ -345,37 +593,60 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
         real = await bot.db.journal(guild_id)
         await db.set_journal(guild_id, real.text, "copied for simulation")
         await db.set_can_speak(guild_id, real.can_speak)
-        people = {"owner": (owner_id, owner_name), "friend": FRIEND, "new": NEWCOMER}
+        people = {"owner": (owner_id, owner_name), "friend": FRIEND, "new": NEWCOMER, "regular": REGULAR}
+        rooms = itertools.count(1000)
         for number, name in enumerate(scenes):
             brain = Brain(cfg, db, bot.llm, bot.scheduler, rng=random.Random(number))
             brain.user_id = bot.user.id if bot.user else 0
-            fill = {"name": cfg.bot_name, **brain.pronouns}
-            channel_id = 1000 + number  # a fresh "room" per scene
-            await db.touch_profile(guild_id, FRIEND[0], FRIEND[1], chatted=False)
-            await db.conn.execute("UPDATE profiles SET chats = 40 WHERE guild_id = ? AND user_id = ?",
-                                  (guild_id, FRIEND[0]))
-            await db.conn.commit()
+            fill = {"name": cat, "owner": owner_name, **brain.pronouns}
+            channel_id = next(rooms)  # a fresh "room" per scene
             lines.append(f"===== {name} =====")
+            history = await _seed_people(db, guild_id, people, SETUPS.get(name, {}))
+            if history:
+                lines.append(f"    (before this scene: {'; '.join(history)})")
             replies: list[str] = []
-            for who, template in SCENES[name]:
+            props = {cat, *(n for _, n in people.values())}
+            involved = {people[who][0] for who in SETUPS.get(name, {})}
+            for step in SCENES[name]:
+                who, template, how = step_parts(step)
                 text = template.format(**fill)
+                if who == "time":
+                    channel_id = next(rooms)
+                    await _pass_time(db, guild_id, TIME_SKIP)
+                    lines += [f"--- {text} ---", ""]
+                    continue
                 user_id, user_name = people[who]
+                involved.add(user_id)
                 msg = Incoming(next(ids), guild_id, channel_id, user_id, user_name, text, time.time(),
-                               mentions_me=True, owner_id=owner_id)
-                await brain.observe(msg, GuildSettings(), 0)
+                               mentions_me=how == "direct", owner_id=owner_id)
+                await brain.observe(msg, GuildSettings(name_trigger=False), 0)
+                props.update(keywords(text, limit=20))
+                if how == "chat":
+                    lines.append(f"{user_name}: {text}")
+                    continue
                 started = time.monotonic()
                 async with bot.scheduler.reply_turn():  # takes turns with real chat
-                    reply = await asyncio.wait_for(brain.compose(msg, "direct"), timeout=REPLY_TIMEOUT)
+                    reply = await asyncio.wait_for(brain.compose(msg, "direct" if how == "direct" else "ambient"),
+                                                   timeout=REPLY_TIMEOUT)
                 seconds = time.monotonic() - started
                 seconds_total += seconds
                 await brain.record_own_message(msg, next(ids), reply, time.time())
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
-                found = checks(reply, raw, replies)
+                found = checks(reply, raw, replies, ignore=props)
                 replies.append(reply)
                 lines += [f"{user_name}: {text}", f"    (scene: {note or '-'})"]
-                if "words were removed" in found:
+                if any(w.startswith("words were removed") for w in found):
                     lines.append(f"    (model wrote: {raw[:400]})")
-                lines.append(f"{cfg.bot_name}: {reply}    [{seconds:.0f}s]")
+                lines.append(f"{cat}{' (chimes in)' if how == 'chime' else ''}: {reply}    [{seconds:.0f}s]")
+                felt = brain.last_feeling(channel_id)
+                if felt and felt[0] != "neutral":
+                    feeling, about, affection, change = felt
+                    lines.append(f"    (feels {feeling} about {user_name}{': ' + about if about else ''} · "
+                                 f"affection {affection:+.0f})")
+                    if change == "chosen":
+                        lines.append(f"    ★ {cat} chose {user_name} as one of {brain.pronouns['his']} people")
+                    elif change == "dropped":
+                        lines.append(f"    ✗ {cat} no longer counts {user_name} as one of {brain.pronouns['his']} people")
                 if found:
                     lines.append("    ⚠ " + "; ".join(found))
                     for warning in found:
@@ -387,6 +658,13 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 if on_step:
                     await on_step(Step(done, total, name, number + 1, len(scenes), user_name, text, note, reply,
                                        seconds))
+            if lines[-1]:
+                lines.append("")
+            feelings_now = [f"{p.name} {p.affection:+.0f}" + (" (human)" if p.user_id == owner_id else "")
+                            + (" chosen" if p.chosen else "")
+                            for p in await db.people(guild_id, 10) if p.user_id in involved]
+            if feelings_now:
+                lines += [f"    (how {cat} feels now: {' · '.join(feelings_now)})", ""]
         summary = ", ".join(f"{kind}: {count}" for kind, count in sorted(flagged.items(), key=lambda kv: -kv[1]))
         lines += ["===== summary =====",
                   f"{done} replies, {seconds_total / max(done, 1):.0f}s average",

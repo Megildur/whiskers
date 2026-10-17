@@ -3,7 +3,7 @@
 - guild_settings / channel_rules: where Whiskers may talk and how chatty it is.
 - messages: recent chat in the channels Whiskers is allowed in (pruned after a week).
 - memories: short diary entries summarised from that chat, searchable by keyword.
-- profiles: what Whiskers knows about each person.
+- profiles: what Whiskers knows about each person and how it feels about them.
 - journal: who Whiskers has become, rewritten as the server shapes it (old versions kept for undo).
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import aiosqlite
@@ -74,6 +74,9 @@ CREATE TABLE IF NOT EXISTS profiles (
     chats INTEGER NOT NULL DEFAULT 0,
     first_seen REAL NOT NULL,
     last_seen REAL NOT NULL,
+    affection REAL NOT NULL DEFAULT 0,
+    feelings TEXT NOT NULL DEFAULT '[]',
+    chosen INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
 );
 CREATE TABLE IF NOT EXISTS journal (
@@ -106,6 +109,11 @@ ADDED_COLUMNS = {
     },
     "guild_settings": {
         "owner_id": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "profiles": {
+        "affection": "REAL NOT NULL DEFAULT 0",
+        "feelings": "TEXT NOT NULL DEFAULT '[]'",
+        "chosen": "INTEGER NOT NULL DEFAULT 0",
     },
 }
 
@@ -165,6 +173,14 @@ class Memory:
 
 
 @dataclass
+class Feeling:
+    """Something a person did that Whiskers loved, liked, disliked or hated."""
+    about: str  # "belly rubs", "tail pulling"
+    feeling: str
+    at: float
+
+
+@dataclass
 class Profile:
     user_id: int
     name: str
@@ -172,6 +188,9 @@ class Profile:
     chats: int = 0
     first_seen: float = 0.0
     last_seen: float = 0.0
+    affection: float = 0.0  # -100 (can't stand them) to 100 (adores them)
+    feelings: list[Feeling] = field(default_factory=list)  # oldest first
+    chosen: bool = False  # Whiskers picked them as one of its people, next to its human
 
 
 @dataclass
@@ -191,7 +210,13 @@ def _row_message(row) -> StoredMessage:
                          row["author_name"], bool(row["is_self"]), row["content"], row["created_at"])
 
 
-def _similar(a: str, b: str) -> bool:
+def _row_profile(row) -> Profile:
+    feelings = [Feeling(f["about"], f["feeling"], f["at"]) for f in json.loads(row["feelings"] or "[]")]
+    return Profile(row["user_id"], row["name"], json.loads(row["facts"]), row["chats"], row["first_seen"],
+                   row["last_seen"], row["affection"], feelings, bool(row["chosen"]))
+
+
+def similar(a: str, b: str) -> bool:
     a, b = a.lower().strip(" ."), b.lower().strip(" .")
     return a == b or a in b or b in a
 
@@ -419,9 +444,28 @@ class Database:
             "SELECT * FROM profiles WHERE guild_id = ? AND user_id = ?", (guild_id, user_id)
         ) as cur:
             row = await cur.fetchone()
-        if row is None:
-            return None
-        return Profile(user_id, row["name"], json.loads(row["facts"]), row["chats"], row["first_seen"], row["last_seen"])
+        return None if row is None else _row_profile(row)
+
+    async def people(self, guild_id: int, limit: int = 8) -> list[Profile]:
+        """The people Whiskers has seen most recently."""
+        async with self.conn.execute(
+            "SELECT * FROM profiles WHERE guild_id = ? ORDER BY last_seen DESC LIMIT ?", (guild_id, limit)
+        ) as cur:
+            return [_row_profile(row) for row in await cur.fetchall()]
+
+    async def chosen_people(self, guild_id: int) -> list[Profile]:
+        async with self.conn.execute(
+            "SELECT * FROM profiles WHERE guild_id = ? AND chosen = 1 ORDER BY affection DESC", (guild_id,)
+        ) as cur:
+            return [_row_profile(row) for row in await cur.fetchall()]
+
+    async def save_feelings(self, guild_id: int, user_id: int, affection: float, feelings: list[Feeling],
+                            chosen: bool) -> None:
+        await self.conn.execute(
+            "UPDATE profiles SET affection = ?, feelings = ?, chosen = ? WHERE guild_id = ? AND user_id = ?",
+            (affection, json.dumps([asdict(f) for f in feelings]), int(chosen), guild_id, user_id),
+        )
+        await self.conn.commit()
 
     async def add_facts(self, guild_id: int, user_id: int, new_facts: list[str]) -> None:
         profile = await self.profile(guild_id, user_id)
@@ -432,7 +476,7 @@ class Database:
             fact = " ".join(fact.split())[:200]
             if len(fact) < 4:
                 continue
-            facts = [f for f in facts if not _similar(f, fact)]
+            facts = [f for f in facts if not similar(f, fact)]
             facts.append(fact)
         await self.conn.execute(
             "UPDATE profiles SET facts = ? WHERE guild_id = ? AND user_id = ?",

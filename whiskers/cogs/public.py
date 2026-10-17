@@ -8,7 +8,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from ..brain import relationship_label
+from ..brain import likes_and_dislikes, relationship_label
 from ..ui import ask_to_confirm, embed
 
 if TYPE_CHECKING:
@@ -44,9 +44,15 @@ class Cat(commands.GroupCog, group_name="cat", group_description="Check in on Wh
         is_owner = interaction.user.id == (settings.owner_id or interaction.guild.owner_id)
         result = embed(f"What {name} remembers about you",
                        f"You've talked {profile.chats} times. To {name}, you're "
-                       f"{relationship_label(profile.chats, is_owner)}.")
+                       f"{relationship_label(profile.chats, is_owner, profile.affection, profile.chosen)}.")
         result.add_field(name="Things it knows", value="\n".join(f"- {f}" for f in profile.facts) or "nothing yet",
                          inline=False)
+        liked, disliked = likes_and_dislikes(profile.feelings)
+        if liked or disliked:
+            result.add_field(name="How you've treated it", value="\n".join(filter(None, [
+                f"😻 Loved: {', '.join(liked[:6])}" if liked else "",
+                f"😾 Didn't like: {', '.join(disliked[:6])}" if disliked else "",
+            ]))[:1024], inline=False)
         if memories:
             result.add_field(name="Moments it remembers", value="\n".join(f"- {m.content}" for m in memories)[:1024],
                              inline=False)

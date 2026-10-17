@@ -8,14 +8,18 @@ CUSTOM_EMOJI = re.compile(r"<a?:(\w+):\d+>")
 WORD = re.compile(r"[a-z0-9']{3,}")
 SPEAKER_LABEL = re.compile(r"^\**\s*([^\s:*][^:\n*]{0,40}?)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*")
 
-# Sounds a cat can make, stretched any amount: meeeow, mrrrp, purrrr, hsss...
+# Sounds a cat can make, stretched any amount: meeeow, mreow, mrrrp, prrt, purrrr, hsss, mlem...
 CAT_SOUND = re.compile(
-    r"^(?:m+e+o+w+|m+e+w+|m+i*a+o+w*|m+r(?:r|p|o+w+)+|p+u*r{2,}[rt]*|h+i*s{2,}|c+h+i*r+p+|t+r+i+l+|"
-    r"n+y+a+n*|y+o+w+l+|r+a+w+r+|b+r{2,}[pt]*|g+r{2,}|m{2,})$",
+    r"^(?:m+r*e+o+w+|m+r*e+w+|m+i*a+o+w*|m+r+(?:r|p|a+p|o+w+)+|m+e{2,}p+|p+u*r{2,}[prt]*|p+r+[pt]+|h+i*s{2,}|"
+    r"c+h+i*r+u*p+|t+r+i*l+|n+y+a+n*|y+e*o+w+l*|r+a+w+r+|b+r{2,}[pt]*|g+r{2,}|r{2,}[pt]*|m{2,}|m+l+e+m+|"
+    r"b+l+e+p+|n+o+m+)$",
     re.I,
 )
 ACTION_OR_PLAIN = re.compile(r"(\*[^*\n]+\*|(?<!\w)_[^_\n]+_(?!\w))")
 SPEECH_IN_ACTION = re.compile(r"[\"“”:]|\b(says?|said|whispers?|speaks?|talks?|thinks?|thoughts?|telepath\w*)\b", re.I)
+# Plain text right after an action that carries the action on: "*launches up*, lands running and hides"
+NARRATION = re.compile(r"^(?:[,;]|(?:and|then|before|while|until|as)\b)", re.I)
+NOT_NARRATION = re.compile(r"[\"“”?]|\b(i|i'm|me|my|you|you're|your|we|hi|hello|hey)\b", re.I)
 
 STOPWORDS = frozenset("""
 the and you your you're for are was were but not with this that have has had what when where who why how
@@ -111,11 +115,19 @@ def ago(seconds: float) -> str:
     return "just now"
 
 
-def _is_cat_token(token: str) -> bool:
+def is_cat_sound(token: str) -> bool:
     letters = re.sub(r"[^A-Za-z-]", "", token)
     if not letters.strip("-"):
         return False  # punctuation or emoji on their own; small models scatter emoji everywhere
     return all(CAT_SOUND.match(part) for part in letters.split("-") if part)
+
+
+def _calm(action: str) -> str:
+    """*GLARES UP AT THE WINDOW* -> *glares up at the window*. Short shouts like *YOWLS* stay."""
+    letters = [ch for ch in action if ch.isalpha()]
+    if len(letters) >= 12 and sum(ch.isupper() for ch in letters) > len(letters) * 0.6:
+        return action.lower()
+    return action
 
 
 def cat_only(text: str) -> str:
@@ -125,17 +137,33 @@ def cat_only(text: str) -> str:
     trusting the prompt. Returns "" if nothing cat-like is left.
     """
     text = re.sub(r"\*{2,}", "", text)  # bold markers; single asterisks are actions
+    text = re.sub(r"[{}]", " ", text)  # stray JSON braces
+    text = re.sub(r"(?<=\w) \* (?=\w)", ", ", text)  # *yowls * crash-lands* : asterisks used as commas
+    if text.count("*") % 2 and re.search(r"\*\s*\w[^*]*$", text):
+        text += "*"  # an action that was never closed
     kept: list[str] = []
     for part in ACTION_OR_PLAIN.split(text):
         part = part.strip()
         if not part:
             continue
         if part[0] in "*_" and part[-1] == part[0] and len(part) > 2:
-            action = " ".join(part[1:-1].split())
+            action = " ".join(part[1:-1].split()).strip(" ,;")
             if action and not SPEECH_IN_ACTION.search(action):
-                kept.append(f"*{action}*")
+                kept.append(f"*{_calm(action)}*")
             continue
-        sounds = [token.strip("*_") for token in part.split() if _is_cat_token(token)]
+        words = part.split()
+        trailing: list[str] = []
+        while words and is_cat_sound(words[-1]):
+            trailing.insert(0, words.pop())
+        rest = " ".join(words)
+        narration = rest.strip(" ,;.")
+        if (narration and kept and kept[-1].startswith("*") and NARRATION.match(rest)
+                and not NOT_NARRATION.search(rest) and not SPEECH_IN_ACTION.search(rest)):
+            # The model forgot the asterisks partway through an action; keep it as part of that action.
+            joiner = ", " if rest[0] in ",;" else " "
+            kept[-1] = kept[-1][:-1] + joiner + _calm(narration) + "*"
+            words = []
+        sounds = [token.strip("*_") for token in words + trailing if is_cat_sound(token)]
         if sounds:
             kept.append(" ".join(sounds))
     result = " ".join(kept)
@@ -144,6 +172,34 @@ def cat_only(text: str) -> str:
         if result.count("*") % 2:
             result += "*"
     return result
+
+
+def _sound_key(token: str) -> str:
+    return re.sub(r"(.)\1+", r"\1", re.sub(r"[^a-z]", "", token.lower()))  # "MRRRP!" -> "mrp"
+
+
+def _sounds(text: str) -> set[str]:
+    return {_sound_key(token) for part in ACTION_OR_PLAIN.split(text) if not part.strip().startswith(("*", "_"))
+            for token in part.split() if is_cat_sound(token)}
+
+
+def drop_repeated_sounds(text: str, recent: list[str]) -> str:
+    """Leave out a cat sound Whiskers made in either of its last two messages, so it doesn't end every
+    reply with "MRRP!". Only when an action is left to carry the reply."""
+    used = set().union(*(_sounds(message) for message in recent[-2:])) if recent else set()
+    if not used:
+        return text
+    kept = []
+    for part in ACTION_OR_PLAIN.split(text):
+        part = part.strip()
+        if part.startswith(("*", "_")):
+            kept.append(part)
+        elif part:
+            tokens = [t for t in part.split() if not (is_cat_sound(t) and _sound_key(t) in used)]
+            if tokens:
+                kept.append(" ".join(tokens))
+    result = " ".join(kept)
+    return result if "*" in result else text
 
 
 def as_stage_directions(text: str, his: str = "its", himself: str = "itself") -> str:
@@ -166,6 +222,20 @@ def _json_string_field(text: str, field: str) -> str | None:
         return raw.replace('\\"', '"').replace("\\n", "\n")
 
 
+def parse_feeling(text: str) -> tuple[str, str]:
+    """The "feeling" and "about" fields of a reply, lowercased and tidied; ("", "") if they're missing."""
+    stripped = text.strip()
+    try:
+        data = json.loads(stripped)
+    except ValueError:
+        data = None
+    if isinstance(data, dict):
+        feeling, about = str(data.get("feeling") or ""), str(data.get("about") or "")
+    else:
+        feeling, about = _json_string_field(stripped, "feeling") or "", _json_string_field(stripped, "about") or ""
+    return feeling.strip().lower(), " ".join(about.split()).strip(" .\"'")[:60]
+
+
 def parse_reply(text: str) -> tuple[str, str]:
     """Split a {"scene": ..., "reply": ...} answer. Falls back to treating the whole text as the reply."""
     stripped = text.strip()
@@ -182,7 +252,8 @@ def parse_reply(text: str) -> tuple[str, str]:
 
 ACTION_FILLER = STOPWORDS | frozenset("""
 softly gently slowly quickly then their them against into onto with from over away again while before after
-around toward towards each other still just little bit eyes head tail paws paw hand hands
+around toward towards each other still just little bit eyes head tail paws paw hand hands legs leg lap ears ear
+nose face fur body chest side
 """.split())
 
 
@@ -202,8 +273,8 @@ def repeated_actions(messages: list[str], ignore: set[str] = frozenset(), limit:
     for message in messages:
         seen = set()
         for word in re.findall(r"[a-z]{3,}", message.lower()):
-            if word in ACTION_FILLER or word in ignored:
-                continue
+            if word in ACTION_FILLER or word in ignored or is_cat_sound(word):
+                continue  # sounds are spaced out in code (drop_repeated_sounds)
             stem = _stem(word)
             if stem in seen:
                 continue

@@ -125,6 +125,10 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
                 "chattiness INTEGER NOT NULL DEFAULT 5, reactions INTEGER NOT NULL DEFAULT 1, name_trigger INTEGER "
                 "NOT NULL DEFAULT 1, ping_on_reply INTEGER NOT NULL DEFAULT 0)")
     old.execute("INSERT INTO guild_settings (guild_id, chattiness) VALUES (1, 12)")
+    old.execute("CREATE TABLE profiles (guild_id INTEGER NOT NULL, user_id INTEGER NOT NULL, name TEXT NOT NULL, "
+                "facts TEXT NOT NULL DEFAULT '[]', chats INTEGER NOT NULL DEFAULT 0, first_seen REAL NOT NULL, "
+                "last_seen REAL NOT NULL, PRIMARY KEY (guild_id, user_id))")
+    old.execute("INSERT INTO profiles (guild_id, user_id, name, chats, first_seen, last_seen) VALUES (1, 5, 'Angel', 9, 1, 2)")
     old.commit()
     old.close()
 
@@ -135,6 +139,8 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
         assert journal.born_at > 0
         settings = await db.guild_settings(1)
         assert (settings.chattiness, settings.owner_id) == (12, 0)
+        angel = await db.profile(1, 5)
+        assert (angel.chats, angel.affection, angel.feelings, angel.chosen) == (9, 0.0, [], False)
         await db.close()
 
     run(go())
@@ -149,6 +155,24 @@ def test_speech_switch_and_reset(tmp_path):
         assert (await db.journal(1)).reflections == 1
         journal = await db.reset_journal(1)
         assert (journal.can_speak, journal.reflections, journal.text) == (False, 0, default_journal("Whiskers"))
+        await db.close()
+
+    run(go())
+
+
+def test_feelings_and_chosen_people_are_saved(tmp_path):
+    from whiskers.db import Feeling
+
+    async def go():
+        db = await open_db(tmp_path)
+        await db.touch_profile(1, 5, "Angel", chatted=True)
+        await db.touch_profile(1, 6, "Tearyu", chatted=True)
+        await db.save_feelings(1, 5, 64.0, [Feeling("belly rubs", "loved", 100.0)], True)
+        await db.save_feelings(1, 6, -20.0, [Feeling("tail pulling", "hated", 200.0)], False)
+        angel = await db.profile(1, 5)
+        assert (angel.affection, angel.chosen, angel.feelings) == (64.0, True, [Feeling("belly rubs", "loved", 100.0)])
+        assert [p.name for p in await db.chosen_people(1)] == ["Angel"]
+        assert {p.name for p in await db.people(1)} == {"Angel", "Tearyu"}
         await db.close()
 
     run(go())

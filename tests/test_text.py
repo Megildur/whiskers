@@ -92,3 +92,37 @@ def test_stray_asterisks_and_first_person_actions_are_tidied():
     assert as_stage_directions("*flops onto my back, hiding my face* mrrp *grooms myself*") == (
         "*flops onto its back, hiding its face* mrrp *grooms itself*")
     assert as_stage_directions("my *naps*") == "my *naps*"  # only inside actions
+
+
+def test_cat_only_keeps_actions_the_model_wrote_sloppily():
+    from whiskers.text import cat_only
+
+    # From real simulations: narration outside the asterisks, asterisks used as commas, stray braces
+    assert cat_only("*launches straight up*, lands already running, and vanishes under the bed *HSSS*") == (
+        "*launches straight up, lands already running, and vanishes under the bed* *HSSS*")
+    assert cat_only("*YOWLS * CRASHLANDS into the bushes outside * GLARES UP AT THE WINDOW*") == (
+        "*yowls, crashlands into the bushes outside, glares up at the window*")
+    assert cat_only("*tilts head* } MRRP? *paws at Brandon's hand* MEEP. }") == (
+        "*tilts head* MRRP? *paws at Brandon's hand* MEEP.")
+    assert cat_only("*pauses, ears twitching*, MREOW") == "*pauses, ears twitching* MREOW"
+    assert cat_only("*hops down* PRRP *sniffs* MRAP? mlem") == "*hops down* PRRP *sniffs* MRAP? mlem"
+    assert cat_only("*stares at Tearyu") == "*stares at Tearyu*"
+    assert cat_only("*purrs* and you are my best friend") == "*purrs*"  # speech is still dropped
+
+
+def test_the_same_sound_twice_in_a_row_is_left_out():
+    from whiskers.text import drop_repeated_sounds
+
+    assert drop_repeated_sounds("*kneads* MRRP!", ["*naps* mrrrp", "*eats*"]) == "*kneads*"
+    assert drop_repeated_sounds("*kneads* MRRP!", ["*naps* mrrrp", "*eats*", "*sits*"]) == "*kneads* MRRP!"
+    assert drop_repeated_sounds("*kneads* meow", ["*naps* mrrp"]) == "*kneads* meow"
+    assert drop_repeated_sounds("MRRP!", ["mrrp"]) == "MRRP!"  # nothing would be left
+
+
+def test_parse_feeling_reads_how_whiskers_felt():
+    from whiskers.text import parse_feeling
+
+    assert parse_feeling('{"scene": "x", "feeling": "Hated", "about": "tail pulling.", "reply": "*hiss*"}') == (
+        "hated", "tail pulling")
+    assert parse_feeling('{"scene": "x", "feeling": "loved", "about": "tuna", "reply": "*ea') == ("loved", "tuna")
+    assert parse_feeling('{"scene": "x", "reply": "*naps*"}') == ("", "")

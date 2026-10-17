@@ -76,3 +76,17 @@ def test_system_prompt_names_whiskers_human():
 
     assert "Brandon is your human" in reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
     assert "The person who owns this server is your human" in reply_system_prompt("P", "- j", "Whiskers", False)
+    assert "chosen" not in reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
+    two = reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon", chosen=["Angel", "Milo"])
+    assert "You've also chosen Angel and Milo as your people" in two
+
+
+def test_replies_say_how_the_person_made_whiskers_feel():
+    from whiskers.prompts import REPLY_SCHEMA, reflection_messages, reply_system_prompt
+
+    assert list(REPLY_SCHEMA["properties"]) == ["scene", "feeling", "about", "reply"]
+    assert "hated" in REPLY_SCHEMA["properties"]["feeling"]["enum"]
+    assert '"feeling": how what the person you\'re answering' in reply_system_prompt("P", "- j", "Whiskers", False)
+    messages = reflection_messages("Whiskers", "P", "- j", [], "chat", can_speak=False, may_learn=False,
+                                   people=["Tearyu: someone it doesn't trust; didn't like tail pulling"])
+    assert "- Tearyu: someone it doesn't trust; didn't like tail pulling" in messages[1]["content"]

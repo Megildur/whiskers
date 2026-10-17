@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from whiskers.db import Database
 from whiskers.llm import ChatResult
 from whiskers.scheduler import Scheduler
-from whiskers.simulate import PACKS, SCENES, checks, run_scenes, scenes_for
+from whiskers.simulate import PACKS, SCENES, SETUPS, checks, count_replies, run_scenes, scenes_for, step_parts
 
 
 class FakeLLM:
@@ -15,7 +15,8 @@ class FakeLLM:
 
     async def chat(self, messages, **kwargs):
         self.calls += 1
-        return ChatResult(json.dumps({"scene": f"scene {self.calls}", "reply": "*pounces on Angel's feet*"}), 5, 0.1)
+        return ChatResult(json.dumps({"scene": f"scene {self.calls}", "feeling": "loved", "about": "chin scratches",
+                                      "reply": "*pounces on Angel's feet*"}), 5, 0.1)
 
 
 def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_path):
@@ -26,9 +27,16 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         bot = SimpleNamespace(cfg=cfg, db=db, llm=FakeLLM(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
                               engine=SimpleNamespace(description="fake"))
         transcript = await run_scenes(bot, 1, 7, "Brandon", list(SCENES))
-        assert bot.llm.calls == sum(len(lines) for lines in SCENES.values())
+        assert bot.llm.calls == count_replies(list(SCENES))
         assert "===== catnip =====" in transcript and "Brandon: Here have some catnip *gives catnip*" in transcript
         assert "(scene: scene 1)" in transcript and "Whiskers: *pounces on Angel's feet*" in transcript
+        assert "Milo: !play lofi hip hop\nAngel: this song slaps\n" in transcript  # read, not answered
+        assert "Whiskers (chimes in): *pounces" in transcript
+        assert "--- The next day ---" in transcript
+        assert "(before this scene: Angel +52 (loved belly rubs, loved salmon))" in transcript
+        assert "(feels loved about Angel: chin scratches · affection +58)" in transcript
+        assert "★ Whiskers chose Angel as one of his people" in transcript
+        assert "Brandon +6 (human)" in transcript
         assert await db.recent_messages(1000, 10) == []  # the real database is untouched
         assert not (cfg.data_dir / "simulation.db").exists()
         await db.close()
@@ -79,7 +87,7 @@ def test_simulate_command_posts_public_progress_and_the_transcript(cfg, tmp_path
         await Admin.simulate.callback(cog, interaction, None)
 
         kinds = [entry[0] for entry in interaction.log]
-        total = sum(len(lines) for lines in PACKS["core"].values())  # the default pack
+        total = count_replies(list(PACKS["core"]))  # the default pack
         assert interaction.log[0][0] == "send" and interaction.log[0][2] is False  # public, not ephemeral
         assert "Simulation running" in interaction.log[0][1]
         assert kinds.count("edit") == total + 1  # one per reply, plus the final one
@@ -127,10 +135,17 @@ def test_every_scene_line_is_valid_for_both_genders():
     from whiskers.prompts import PRONOUNS
 
     for pronouns in PRONOUNS.values():
-        for name, lines in SCENES.items():
-            for who, template in lines:
-                assert who in ("owner", "friend", "new"), name
-                assert "{" not in template.format(name="Whiskers", **pronouns), name
+        for name, steps in SCENES.items():
+            assert step_parts(steps[0])[0] != "time", name
+            for step in steps:
+                who, template, how = step_parts(step)
+                assert len(step) in (2, 3) and how in ("direct", "chat", "chime"), name
+                assert who in ("owner", "friend", "new", "regular", "time"), name
+                assert "{" not in template.format(name="Whiskers", owner="Brandon", **pronouns), name
+                if how != "direct":
+                    assert "{name}" not in template, f"{name}: saying the cat's name would be talking to it"
+    for name, setup in SETUPS.items():
+        assert name in SCENES and set(setup) <= {"owner", "friend", "new", "regular"}, name
 
 
 def test_choosing_scenes():
@@ -144,6 +159,12 @@ def test_choosing_scenes():
 def test_checks_flag_common_problems():
     assert checks("*flicks tail*", "", []) == ["stock action: nothing usable came back from the model"]
     assert checks("*flops onto my back*", "*flops onto my back*", []) == ["I/my inside an action"]
-    assert checks("*purrs*", "*purrs* hello friend", []) == ["words were removed"]
+    assert checks("*purrs*", "*purrs* hello friend", []) == ["words were removed: hello, friend"]
+    assert checks("*purrs*", "*purrs*, MRRP!*", []) == []  # punctuation and a left-out sound aren't words
+    assert checks("*flops onto his back*", "*flops onto my back*", []) == []
     assert "repeats: purrs" in checks("*purrs loudly*", "", ["*purrs*", "*naps*"])
     assert checks("*pounces on the toy mouse*", "*pounces on the toy mouse*", ["*naps*"]) == []
+    assert checks("*wags his tail*", "", []) == ["dog-like: wags"]
+    # The people and things in the scene aren't Whiskers repeating itself
+    earlier = ["*bats the toy toward Tearyu*", "*chases the toy*"]
+    assert checks("*pounces on the toy at Tearyu's feet*", "", earlier, ignore={"Tearyu", "toy"}) == []

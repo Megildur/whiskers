@@ -14,14 +14,17 @@ from datetime import datetime, timezone
 from typing import AsyncContextManager, Awaitable, Callable
 
 from .config import Config
-from .db import ChannelRule, Database, GuildSettings, Memory, Profile, StoredMessage
+from .db import ChannelRule, Database, Feeling, GuildSettings, Memory, Profile, StoredMessage, similar
 from .llm import LLMClient, LLMError, parse_json
 from .prompts import (
     PRONOUNS, REPLY_SCHEMA, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
     reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
 )
 from .scheduler import Scheduler
-from .text import ago, as_stage_directions, cat_only, clean_reply, keywords, parse_reply, repeated_actions
+from .text import (
+    ago, as_stage_directions, cat_only, clean_reply, drop_repeated_sounds, keywords, parse_feeling, parse_reply,
+    repeated_actions,
+)
 
 log = logging.getLogger("whiskers.brain")
 
@@ -45,6 +48,16 @@ HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usua
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
+
+# How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
+# counts for more than a treat, so one kick out of a window takes a few kind days to make up for.
+FEELING_EFFECT = {"loved": 6, "liked": 3, "neutral": 0, "disliked": -8, "hated": -20}
+CHOOSE_AT = 60  # affection at which Whiskers picks someone as one of its people, next to its human
+UNCHOOSE_BELOW = 25  # and below which they stop being one
+CHOOSE_MIN_CHATS = 8
+MAX_CHOSEN = 3
+MAX_FEELINGS = 10  # things remembered per person
+WARY_AT = -12
 
 
 @dataclass
@@ -101,34 +114,55 @@ def chattiness_for(settings: GuildSettings, rules: dict[int, ChannelRule], chain
     return settings.chattiness
 
 
-def relationship(chats: int, is_owner: bool = False) -> str:
+def relationship(chats: int, is_owner: bool = False, affection: float = 0.0, chosen: bool = False) -> str:
     """How Whiskers feels about someone, for the model's notes."""
     if is_owner:
         return "your human, the person you love most in the world"
-    if chats <= 1:
-        return "new to you: you're curious about them and a little shy, but friendly"
-    if chats < 6:
-        return "you're getting to know them and starting to like them"
-    if chats < 25:
-        return "you like them and are happy to see them"
-    if chats < 100:
+    if chosen:
+        return "one of your chosen people: you love them almost as much as your human and go to them for cuddles"
+    if affection <= -40:
+        return ("you can't stand them after how they've treated you: you hiss, swat or stalk off when they come "
+                "near. Only kindness over a long time could change that")
+    if affection <= WARY_AT:
+        return ("you don't trust them after how they've treated you: ears back, you keep your distance and watch "
+                "their hands, though gentleness and treats could win you back")
+    if affection >= 35:
+        return "you really like them: you trust them and go to them for attention"
+    if chats >= 25:
         return "a good friend you trust"
-    return "one of your favourite people"
+    if chats >= 6 or affection >= 12:
+        return "you like them and are happy to see them"
+    if chats >= 2 or affection >= 5:
+        return "you're getting to know them and starting to like them"
+    return "new to you: you're curious about them and a little shy, but friendly"
 
 
-def relationship_label(chats: int, is_owner: bool = False) -> str:
+def relationship_label(chats: int, is_owner: bool = False, affection: float = 0.0, chosen: bool = False) -> str:
     """The same, said about Whiskers to the person themselves."""
     if is_owner:
         return "its human"
-    if chats <= 1:
-        return "someone new"
-    if chats < 6:
-        return "someone it's getting to know"
-    if chats < 25:
-        return "a friend"
-    if chats < 100:
+    if chosen:
+        return "one of its chosen people"
+    if affection <= -40:
+        return "someone it can't stand"
+    if affection <= WARY_AT:
+        return "someone it doesn't trust"
+    if affection >= 35:
+        return "a close friend"
+    if chats >= 25:
         return "a good friend"
-    return "one of its favourite people"
+    if chats >= 6 or affection >= 12:
+        return "a friend"
+    if chats >= 2 or affection >= 5:
+        return "someone it's getting to know"
+    return "someone new"
+
+
+def likes_and_dislikes(feelings: list[Feeling]) -> tuple[list[str], list[str]]:
+    """What someone did that Whiskers liked, and what it didn't, newest first."""
+    newest = list(reversed(feelings))
+    return ([f.about for f in newest if f.feeling in ("loved", "liked")],
+            [f.about for f in newest if f.feeling in ("disliked", "hated")])
 
 
 class Brain:
@@ -151,6 +185,8 @@ class Brain:
         self._owners: dict[int, int] = {}  # guild -> Whiskers' human
         self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
         self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
+        self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
+        self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -172,11 +208,22 @@ class Brain:
         self._last_message[msg.channel_id] = msg.message_id
         if msg.owner_id:
             self._owners[msg.guild_id] = msg.owner_id
-        decision = self.decide(msg, settings, chattiness)
+        profile = await self.db.profile(msg.guild_id, msg.author_id)
+        decision = self.decide(msg, settings, chattiness, fondness=self.fondness(msg, profile))
         await self.db.touch_profile(msg.guild_id, msg.author_id, msg.author_name, chatted=decision.reply == "direct")
         return decision
 
-    def decide(self, msg: Incoming, settings: GuildSettings, chattiness: int, now: float | None = None) -> Decision:
+    @staticmethod
+    def fondness(msg: Incoming, profile: Profile | None) -> float:
+        """How much more (or less) likely Whiskers is to join in when this person talks."""
+        if msg.author_id == msg.owner_id or (profile and profile.chosen):
+            return 1.5
+        if profile and profile.affection <= WARY_AT:
+            return 0.5
+        return 1.0
+
+    def decide(self, msg: Incoming, settings: GuildSettings, chattiness: int, now: float | None = None,
+               fondness: float = 1.0) -> Decision:
         now = time.time() if now is None else now
         decision = Decision()
         talking_to_me = msg.is_dm or msg.mentions_me or msg.replies_to_me or (
@@ -192,6 +239,7 @@ class Brain:
                 chance = 0.0  # don't take over the channel
             elif CAT_WORDS.search(msg.content):
                 chance *= 2.5
+            chance *= fondness
             if chance and self.rng.random() < min(chance, 0.9):
                 decision.reply = "ambient"
         if settings.reactions and decision.reply is None:
@@ -303,7 +351,7 @@ class Brain:
 
     def notes(self, msg: Incoming, kind: str, profiles: list[Profile], memories: list[Memory],
               can_speak: bool = False, scene: str | None = None, repeating: list[str] | None = None,
-              now: float | None = None) -> list[str]:
+              now: float | None = None, news: list[str] | None = None) -> list[str]:
         now = time.time() if now is None else now
         local = datetime.fromtimestamp(now, self._tz)
         hour = local.hour
@@ -317,27 +365,38 @@ class Brain:
             part = "night"
         notes = [f"It's {local:%A} {part} ({local:%I:%M %p}).".replace("(0", "(")]
         for profile in profiles:
-            line = f"{profile.name}: {relationship(profile.chats, profile.user_id == msg.owner_id)}."
+            is_owner = profile.user_id == msg.owner_id
+            line = f"{profile.name}: {relationship(profile.chats, is_owner, profile.affection, profile.chosen)}."
             if profile.facts:
                 line += " " + "; ".join(profile.facts[-6:]) + "."
+            felt = [f for f in profile.feelings if f.feeling != "neutral"][-5:]
+            if felt:
+                line += " Things they've done: " + "; ".join(
+                    f"{f.about} (you {f.feeling} it, {ago(now - f.at)})" for f in reversed(felt)) + "."
             notes.append(line)
         for memory in memories:
             notes.append(f"You remember ({ago(now - memory.created_at)}): {memory.content}")
+        notes += news or []
         if scene:
             notes.append(f"Where things stood after your last message: {scene}")
         if repeating:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
         latest = msg.content if len(msg.content) <= 300 else msg.content[:300] + "..."
+        feeling = f'Your "feeling" is about {msg.author_name}.'
         if kind == "direct" and can_speak:
             notes.append(f'{msg.author_name} just said or did: "{latest}". Answer them as {self.name}, carrying on '
-                         "from what's been happening.")
+                         f"from what's been happening. {feeling}")
         elif kind == "direct":
             notes.append(f'{msg.author_name} just said or did: "{latest}". React to it the way a cat would, with no '
-                         "words, carrying on from what's been happening.")
+                         f"words, carrying on from what's been happening. {feeling}")
         else:
             notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
-                         "Join in the way a cat would.")
+                         f"Join in the way a cat would, or just do your own cat thing nearby. {feeling}")
         return notes
+
+    def last_feeling(self, channel_id: int) -> tuple[str, str, float, str | None] | None:
+        """(feeling, about, affection now, "chosen"/"dropped"/None) from the last reply here, for simulations."""
+        return self._felt.get(channel_id)
 
     def last_raw_reply(self, channel_id: int) -> str:
         """What the model wrote for its last reply here, before human words were filtered out."""
@@ -375,15 +434,19 @@ class Brain:
                 memories.append(memory)
 
         owner = await self._owner_name(msg.guild_id)
+        chosen = [p.name for p in await self.db.chosen_people(msg.guild_id) if p.user_id != msg.owner_id]
         system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak, owner,
-                                     self.pronouns)
+                                     self.pronouns, chosen)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
         scene, scene_at = self._scenes.get(msg.channel_id, ("", 0.0))
         if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
             scene = ""
         recent_own = [r.content for r in rows if r.is_self][-6:]
-        repeating = repeated_actions(recent_own, ignore={self.name, *names})
-        notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak, scene, repeating)
+        # Only Whiskers' own habits count as repeating, not the people and things the scene is about.
+        props = keywords(" ".join([msg.content] + [r.content for r in rows[-12:] if not r.is_self]), limit=40)
+        repeating = repeated_actions(recent_own, ignore={self.name, *names, *props})
+        news = [n for p in profiles if (n := self._news.pop((msg.guild_id, p.user_id), None))]
+        notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak, scene, repeating, news=news)
         preset = self.cfg.preset if self.cfg.llm_backend == "managed" else None
         messages = reply_messages(system, rows, notes, self.name,
                                   system_in_first_turn=bool(preset and preset.system_in_first_turn))
@@ -401,8 +464,52 @@ class Brain:
         text = as_stage_directions(clean_reply(reply, self.name, names), self.pronouns["his"],
                                    self.pronouns["himself"])
         if not journal.can_speak:
-            text = cat_only(text)
+            text = drop_repeated_sounds(cat_only(text), recent_own)
+        self._felt.pop(msg.channel_id, None)
+        if kind == "direct":  # chiming in on other people's chat says little about how they treat Whiskers
+            await self.feel(msg, *parse_feeling(result.text))
         return text or self.rng.choice(FALLBACK_ACTIONS)
+
+    async def feel(self, msg: Incoming, feeling: str, about: str) -> str | None:
+        """Remember how what someone just did made Whiskers feel, and let it add up.
+
+        Enough love and Whiskers chooses them as one of its people; enough hurt and it un-chooses them.
+        Returns "chosen" or "dropped" when that happens.
+        """
+        effect = FEELING_EFFECT.get(feeling, 0)
+        profile = await self.db.profile(msg.guild_id, msg.author_id) if msg.guild_id else None
+        self._felt[msg.channel_id] = (feeling or "neutral", about, profile.affection if profile else 0.0, None)
+        if not effect or profile is None:
+            return None
+        affection = max(-100.0, min(100.0, profile.affection + effect))
+        feelings = list(profile.feelings)
+        if about:
+            feelings = [f for f in feelings if not similar(f.about, about)]
+            feelings.append(Feeling(about, feeling, time.time()))
+        chosen, change = profile.chosen, None
+        key = (msg.guild_id, msg.author_id)
+        if (not chosen and msg.author_id != msg.owner_id and affection >= CHOOSE_AT
+                and profile.chats >= CHOOSE_MIN_CHATS and len(await self.db.chosen_people(msg.guild_id)) < MAX_CHOSEN):
+            chosen, change = True, "chosen"
+            self._news[key] = f"You've just decided that {profile.name} is one of your people now, next to your human."
+            log.info("Whiskers chose %s as one of its people in guild %s.", profile.name, msg.guild_id)
+        elif chosen and affection < UNCHOOSE_BELOW:
+            chosen, change = False, "dropped"
+            self._news[key] = f"{profile.name} has hurt you too often lately: they aren't one of your people anymore."
+            log.info("Whiskers no longer counts %s as one of its people in guild %s.", profile.name, msg.guild_id)
+        await self.db.save_feelings(msg.guild_id, msg.author_id, affection, feelings[-MAX_FEELINGS:], chosen)
+        self._felt[msg.channel_id] = (feeling, about, affection, change)
+        return change
+
+    def describe_person(self, profile: Profile, is_owner: bool) -> str:
+        """One line about someone for the journal update."""
+        line = f"{profile.name}: {relationship_label(profile.chats, is_owner, profile.affection, profile.chosen)}"
+        liked, disliked = likes_and_dislikes(profile.feelings)
+        if liked:
+            line += "; enjoyed " + ", ".join(liked[:3])
+        if disliked:
+            line += "; didn't like " + ", ".join(disliked[:3])
+        return line.replace("its ", f"{self.pronouns['his']} ")
 
     # ---- background chores: memories and growing up ----
 
@@ -464,13 +571,15 @@ class Brain:
             and time.time() - journal.born_at >= self.cfg.speech_after_days * 86400
         )
         memories = [m.content for m in await self.db.recent_memories(guild_id, 8)]
+        owner_id = self._owners.get(guild_id, 0)
+        people = [self.describe_person(p, p.user_id == owner_id) for p in await self.db.people(guild_id, 8)]
         rows = await self.db.recent_guild_messages(guild_id, 40)
         if not journal.can_speak:
             rows = self.as_cat(rows)
         result = await self.llm.chat(
             reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000),
                                 can_speak=journal.can_speak, may_learn=may_learn,
-                                owner=await self._owner_name(guild_id), pronouns=self.pronouns),
+                                owner=await self._owner_name(guild_id), pronouns=self.pronouns, people=people),
             max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn),
         )
         data = parse_json(result.text)

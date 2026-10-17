@@ -86,7 +86,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers chattiness <percent> [channel]` | Manage Server | How often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, or all (39 scenes, about 45 minutes). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
+| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, discord, or all (67 scenes, over an hour). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -94,7 +94,7 @@ You can allow a whole category at once, and threads follow their parent channel.
 | `/whiskers personality undo` / `reset` | Manage Server | Go back one journal version, or back to an ordinary cat. |
 | `/whiskers memory forget <member>` / `wipe` | Manage Server | Forget one person, or everything in this server. |
 | `/cat journal` | Everyone | Read Whiskers' journal. |
-| `/cat memories` | Everyone | What Whiskers remembers about you (only you see it). |
+| `/cat memories` | Everyone | What Whiskers remembers about you, how it feels about you and what you've done that it loved or hated (only you see it). |
 | `/cat forget-me` | Everyone | Make Whiskers forget you. |
 
 Server admins can change who sees the `/whiskers` commands in **Server Settings > Integrations > Whiskers**.
@@ -118,6 +118,17 @@ Whiskers' personality has two layers:
 
 The journal is the truth for Whiskers: whatever it says, Whiskers does. You can steer it with `/whiskers personality edit`, roll back a change you don't like with `undo`, or start over with `reset`. Each server has its own Whiskers.
 
+### Who it loves, and who it holds a grudge against
+
+Every time Whiskers answers someone, it also notes how what they just did made it feel: loved, liked, neutral, disliked or hated, and what it was ("tuna", "belly rubs", "tail pulling"). That adds up to how much it likes each person:
+
+- Treats, gentle petting and play make it like someone more. Rough handling, scaring or hurting it counts for more, so one kick out of a window takes a few kind days to make up for.
+- Before each reply Whiskers is reminded how it feels about the people in the conversation and what they've done to it, so it seeks out the people it loves and keeps its distance from someone who pulled its tail yesterday, until they win it back with gentleness and treats.
+- When it loves someone enough (and knows them well), Whiskers **chooses them as one of its people**, next to its human: it greets them happily and picks their lap. It chooses up to 3. Someone who keeps hurting it stops being one. `/whiskers status` shows who it has chosen.
+- Its human (the server owner, or whoever `/whiskers owner` sets) is always its favourite, whatever happens. Whiskers still remembers the bath.
+
+People who are kind to Whiskers also get chimed in on a bit more often, and people it doesn't trust a bit less.
+
 ### Learning to talk
 
 Whiskers starts as just a cat. Its replies are only *actions* and cat sounds (mrrp, meow, purr, hiss) and emoji. Small models slip into English even when told not to, so any human words are also removed from its replies before they're sent.
@@ -130,7 +141,7 @@ You can also decide yourself with `/whiskers personality speech`: lock it back t
 
 - **Recent chat**: messages in allowed channels, kept for a week. Whiskers reads the last couple dozen messages before it answers.
 - **Memories**: while things are quiet, Whiskers turns chat into short diary entries ("Alice gave Whiskers a laser pointer and it chased it for an hour") and recalls the relevant ones when a topic comes up again.
-- **People**: facts about each person (pets, hobbies, how they treat Whiskers) and how well it knows them.
+- **People**: facts about each person (pets, hobbies, how they treat Whiskers), how well it knows them, how much it likes them, and the last 10 things they did that it loved or hated.
 
 It never reads channels it isn't allowed in, deleted and edited messages are updated in its chat log, and people can see or erase what it knows about them with `/cat memories` and `/cat forget-me`. Everything is stored in `data/whiskers.db` on your server.
 
@@ -153,9 +164,11 @@ The commented `.env.example` lists them all. The ones you might change:
 
 ## Testing changes
 
-`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 39 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, and one long day), so a pack takes a few minutes.
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 67 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, and everyday Discord chat), so a pack takes a few minutes to about 15.
 
-Each line of the transcript shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. Replies are checked automatically for stock fallback actions, human words that had to be removed (with what the model actually wrote), "I/my" in actions, repetition and overly long replies, with a count at the end. The scenes live in `whiskers/simulate.py`. Real chats wait while a simulation reply is being written, so run it when the server is quiet.
+The **feelings** pack starts some scenes with history (Angel almost loved enough to be chosen, Tearyu having pulled its tail before) and skips ahead in time ("--- The next day ---"), so only what Whiskers remembers about people carries over. The **discord** pack is ordinary server chat: people talking among themselves about games and memes, pings, spam, arguments and bot commands. Whiskers reads every line, sometimes chimes in (marked "chimes in") and answers when someone talks to it.
+
+Each line of the transcript shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. Under each reply it shows how Whiskers felt about the person and its affection for them, and marks when it chooses someone or stops counting them as one of its people. Replies are checked automatically for stock fallback actions, human words that had to be removed (which words, and what the model actually wrote), "I/my" in actions, dog behaviour, repetition and overly long replies, with a count at the end. The scenes live in `whiskers/simulate.py`. Real chats wait while a simulation reply is being written, so run it when the server is quiet.
 
 Simulations don't change the model itself. They show where Whiskers goes wrong, and the fixes go into `personality.txt` and the rules and example replies in `whiskers/prompts.py`.
 
