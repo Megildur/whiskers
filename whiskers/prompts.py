@@ -68,13 +68,13 @@ COMMUNICATING_RULES = ROLEPLAY_RULES + """
 - You're still a cat: simple, short thoughts with cat logic, mixed with *actions in asterisks* and the occasional cat sound.
 - One to three sentences. Never repeat what you did in your last few messages. No lists or headings."""
 
-# Every reply carries a short private note on the scene (writing it first, as a moment of thought, makes
-# the model follow the story better), the message, and how the person made Whiskers feel. The message is
-# posted as soon as it's written and the rest is finished afterwards. On a CPU every token written before
-# the message costs time, so the built-in engine uses four plain lines held to that shape by a grammar
-# (only the bracketed note and two punctuation tokens come first), the note is short, and SCENE_NOTE=after
-# moves it behind the message. Other AI servers get the same fields as JSON. The feeling builds up into how
-# much Whiskers likes each person (brain.Brain.feel).
+# Replies come back as JSON: a short private note on the scene (writing it first, as a moment of thought,
+# makes the model follow the story better), the message, then how the person made Whiskers feel. The
+# message is posted as soon as it's written and the rest is finished afterwards. On a CPU every token written
+# before the message costs time, so the note is short, and SCENE_NOTE=after moves it behind the message.
+# The "reply" field keeps the message in the cat's own *action* style; a plain-text format without it made
+# the model narrate instead (see git history). The feeling builds up into how much Whiskers likes each person
+# (brain.Brain.feel).
 FEELINGS = ["loved", "liked", "neutral", "disliked", "hated"]
 SCENE_LIMIT = {True: 70, False: 110}  # characters, with the note before / after the message
 
@@ -86,46 +86,18 @@ FEELING_RULE = (
     "rough handling, scaring, trapping or hurting {name} is disliked or hated."
 )
 ABOUT_RULE = ("unless the feeling is neutral, what they did as a short phrase without pronouns, like \"tuna\", "
-              "\"belly rubs\", \"tail pulling\" or \"being kicked out a window\".")
+              "\"belly rubs\", \"tail pulling\" or \"being kicked out a window\". Otherwise \"\".")
 
 
-def reply_format(scene_first: bool = True, as_json: bool = True) -> str:
-    if as_json:
-        if scene_first:
-            fields = ['- "scene": a private note about {name} in the third person ({he}/{him}), under 10 words: what '
-                      'just happened and how {he} feels, like "Brandon put down tuna; {name} is starving". Nobody '
-                      'sees this.', '- "reply": your message to the chat.']
-        else:
-            fields = ['- "reply": your message to the chat.',
-                      '- "scene": a private note for next time about {name} in the third person ({he}/{him}): '
-                      'what\'s happening now and how {he} feels, like "Brandon put down tuna; {name} is eating". '
-                      'Nobody sees this.']
-        fields += ['- "feeling": ' + FEELING_RULE, '- "about": ' + ABOUT_RULE + ' Otherwise "".']
-        return "\n\nAnswer in JSON with these fields, in this order:\n" + "\n".join(fields)
-    note = ("in brackets, a private note about {name} in the third person ({he}/{him}), under 10 words: what just "
-            "happened and how {he} feels. Nobody sees it." if scene_first else
-            "in brackets, a private note for next time about {name} in the third person ({he}/{him}): what's "
-            "happening now and how {he} feels. Nobody sees it.")
-    message = "your message to the chat, on one line."
-    example = ["(Brandon put down tuna; {name} is starving)", "*dives into the bowl, purring between bites*"]
-    first, second = (note, message) if scene_first else (message, note)
-    if not scene_first:
-        example = [example[1], "(Brandon put down tuna; {name} is eating)"]
-    return ("\n\nAnswer in exactly four lines, like this example:\n" + "\n".join(example)
-            + "\nfeeling: loved\nabout: tuna\n\n"
-            f"Line 1: {first}\nLine 2: {second}\n"
-            "Line 3, feeling: " + FEELING_RULE + "\nLine 4, about: " + ABOUT_RULE + " Otherwise leave it empty.")
-
-
-def reply_grammar(scene_first: bool = True) -> str:
-    """The four-line shape for llama.cpp. The message can't start with a bracket, so it's never taken for the note."""
-    order = 'note "\\n" message' if scene_first else 'message "\\n" note'
-    feelings = " | ".join(f'"{feeling}"' for feeling in FEELINGS)
-    return (f'root ::= {order} "\\nfeeling: " feeling "\\nabout: " about\n'
-            f'note ::= "(" [^\\n()]{{1,{SCENE_LIMIT[scene_first]}}} ")"\n'
-            'message ::= [^\\n(] [^\\n]*\n'
-            f"feeling ::= {feelings}\n"
-            "about ::= [^\\n]{0,60}\n")
+def reply_format(scene_first: bool = True) -> str:
+    scene_before = ('- "scene": a private note about {name} in the third person ({he}/{him}), under 10 words: what '
+                    'just happened and how {he} feels, like "Brandon put down tuna; {name} is starving". Nobody sees this.')
+    scene_after = ('- "scene": a private note for next time about {name} in the third person ({he}/{him}): what\'s '
+                   'happening now and how {he} feels, like "Brandon put down tuna; {name} is eating". Nobody sees this.')
+    reply = '- "reply": your message to the chat.'
+    fields = [scene_before, reply] if scene_first else [reply, scene_after]
+    fields += ['- "feeling": ' + FEELING_RULE, '- "about": ' + ABOUT_RULE]
+    return "\n\nAnswer in JSON with these fields, in this order:\n" + "\n".join(fields)
 
 
 def reply_schema(scene_first: bool = True) -> dict:
@@ -187,11 +159,9 @@ def owner_paragraph(name: str, owner: str | None, chosen: list[str] | None = Non
 
 
 def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bool, owner: str | None = None,
-                        pronouns: dict | None = None, chosen: list[str] | None = None, scene_first: bool = True,
-                        as_json: bool = True) -> str:
+                        pronouns: dict | None = None, chosen: list[str] | None = None, scene_first: bool = True) -> str:
     pronouns = pronouns or PRONOUNS["boy"]
-    rules = ((COMMUNICATING_RULES if can_speak else CAT_RULES)
-             + reply_format(scene_first, as_json)).format(name=name, **pronouns)
+    rules = ((COMMUNICATING_RULES if can_speak else CAT_RULES) + reply_format(scene_first)).format(name=name, **pronouns)
     return (
         f"{personality}\n"
         f"You're a {pronouns['gender']} cat; people call you {pronouns['he']}/{pronouns['him']}.\n\n"

@@ -343,7 +343,7 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
         last_turn = brain.llm.calls[-1][0][-1]["content"]
         assert "Where things stood after your last message: Brandon gave me catnip and I'm going wild" in last_turn
         assert "You've been repeating yourself (" in last_turn and "purrs" in last_turn
-        assert brain.llm.calls[-1][1]["grammar"].startswith('root ::= note "\\n" message "\\nfeeling: "')
+        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply", "feeling", "about"]
         await brain.db.close()
 
     asyncio.run(go())

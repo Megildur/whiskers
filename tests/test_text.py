@@ -150,19 +150,15 @@ def test_run_together_sounds_and_a_sound_holding_an_actions_asterisk():
     assert cat_only("*thinks that you are weird* *naps*") == "*naps*"
 
 
-def test_replies_are_read_from_four_lines_or_json():
-    from whiskers.text import read_reply, written_reply
+def test_replies_are_read_from_json_even_while_being_written():
+    from whiskers.text import narration_as_action, read_reply, written_reply
 
-    assert read_reply("(Brandon pets him; he purrs)\n*melts*\nfeeling: Liked\nabout: pets.") == (
-        "Brandon pets him; he purrs", "*melts*", "liked", "pets")
-    assert read_reply("*melts*\n(Brandon pets him)\nfeeling: neutral\nabout: ") == ("Brandon pets him", "*melts*",
-                                                                                    "neutral", "")
-    assert read_reply('{"scene": "x", "reply": "*naps*", "feeling": "loved", "about": "tuna"}') == (
+    assert read_reply('{"scene": "x", "reply": "*naps*", "feeling": "Loved", "about": "tuna."}') == (
         "x", "*naps*", "loved", "tuna")
-    assert read_reply("just some text\nover two lines") == ("", "just some text\nover two lines", "", "")
-    # The message is ready to post as soon as its line is finished, before the notes after it
-    assert written_reply("(Brandon pets him)\n*melts into") is None
-    assert written_reply("(Brandon pets him)\n*melts into the hand*\nfeel") == "*melts into the hand*"
-    assert written_reply("*melts into the hand*\n(Bran") == "*melts into the hand*"
+    assert read_reply("just some text") == ("", "just some text", "", "")
     assert written_reply('{"scene": "x", "reply": "*na') is None
     assert written_reply('{"scene": "x", "reply": "*naps*"') == "*naps*"
+    assert narration_as_action("Whiskers leans into the hand and purrs.", "Whiskers") == "*leans into the hand and purrs*"
+    assert narration_as_action("He flops over!", "Whiskers") == "*flops over*"
+    assert narration_as_action("Hello there, I am a cat.", "Whiskers") == ""
+    assert narration_as_action("What do you want?", "Whiskers") == ""

@@ -20,13 +20,13 @@ from .db import ChannelRule, Database, Feeling, GuildSettings, Journal, Memory, 
 from .llm import CHORES, ChatResult, LLMClient, LLMError, parse_json
 from .prompts import (
     PRONOUNS, SCENE_LIMIT, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, prefill_messages,
-    reflection_messages, reflection_schema, reply_grammar, reply_messages, reply_schema, reply_system_prompt,
-    summary_messages, transcript,
+    reflection_messages, reflection_schema, reply_messages, reply_schema, reply_system_prompt, summary_messages,
+    transcript,
 )
 from .scheduler import Scheduler
 from .text import (
-    ago, as_stage_directions, cat_only, clean_reply, drop_repeated_sounds, keywords, read_reply, repeated_actions,
-    written_reply,
+    ago, as_stage_directions, cat_only, clean_reply, drop_repeated_sounds, keywords, narration_as_action, read_reply,
+    repeated_actions, written_reply,
 )
 
 log = logging.getLogger("whiskers.brain")
@@ -229,10 +229,7 @@ class Brain:
         self._active_guild = 0
         self.slot_key: object | None = None  # which cache slot replies use; None means one per channel
         self.scene_first = cfg.scene_note == "before"
-        # llama.cpp gets the reply as four plain lines (fewer tokens to write than JSON); other servers get JSON.
-        self.lines = cfg.llm_backend == "managed"
-        self.reply_schema = None if self.lines else reply_schema(self.scene_first)
-        self.reply_grammar = reply_grammar(self.scene_first) if self.lines else None
+        self.reply_schema = reply_schema(self.scene_first)
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -501,10 +498,10 @@ class Brain:
         if kind == "direct":
             return (f'{msg.author_name} {said}: "{latest}". React as a cat would, with no words, carrying on from '
                     f"what's been happening. {feeling}")
-        if kind == "home":  # Whiskers' own channel: it answers everything, meant for it or not
-            return (f'{msg.author_name} {said}: "{latest}". It may not be meant for you. React as a cat '
-                    f"would{', in your own way' if can_speak else ', with no words'}, carrying on from what's been "
-                    f"happening. {feeling}")
+        if kind == "home":  # Whiskers' own channel: people talk to it without saying its name
+            return (f'{msg.author_name} {said}: "{latest}". React as a cat would'
+                    f"{', in your own way' if can_speak else ', with no words'}, carrying on from what's been "
+                    f"happening. If it's clearly meant for someone else, do your own cat thing nearby. {feeling}")
         return (f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                 f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
 
@@ -534,8 +531,7 @@ class Brain:
         owner_id = self._owners.get(guild_id, 0)
         chosen = [p.name for p in await self.db.chosen_people(guild_id) if p.user_id != owner_id]
         return reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak,
-                                   await self._owner_name(guild_id), self.pronouns, chosen, self.scene_first,
-                                   as_json=not self.lines)
+                                   await self._owner_name(guild_id), self.pronouns, chosen, self.scene_first)
 
     @property
     def _system_in_first_turn(self) -> bool:
@@ -580,7 +576,10 @@ class Brain:
             text = as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],
                                        self.pronouns["himself"])
             if not journal.can_speak:
-                text = drop_repeated_sounds(cat_only(text), recent_own)
+                # A message narrated without asterisks ("Whiskers leans in and purrs.") is still an action.
+                text = drop_repeated_sounds(cat_only(text) or narration_as_action(text, self.name), recent_own)
+            if not text:
+                log.warning("Nothing usable in the model's reply, so Whiskers falls back to a stock action: %r", raw)
             return text or self.rng.choice(FALLBACK_ACTIONS)
 
         streamed = [""]
@@ -599,8 +598,7 @@ class Brain:
                 try:
                     return await self.llm.chat(
                         messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
-                        json_schema=self.reply_schema, grammar=self.reply_grammar, extra=ANTI_REPEAT, on_text=watch,
-                        slot=slot,
+                        json_schema=self.reply_schema, extra=ANTI_REPEAT, on_text=watch, slot=slot,
                     )
                 except LLMError as error:
                     if "context" not in str(error).lower() or len(history) <= 4:

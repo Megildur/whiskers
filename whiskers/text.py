@@ -310,46 +310,29 @@ class ReplyParts(NamedTuple):
     about: str
 
 
-def _is_note(line: str) -> bool:
-    return line.startswith("(") and line.endswith(")")
-
-
 def _tidy_feeling(feeling: str, about: str) -> tuple[str, str]:
     return feeling.strip().lower(), " ".join(about.split()).strip(" .\"'")[:60]
 
 
 def read_reply(text: str) -> ReplyParts:
-    """A reply written as four lines ("(note)", the message, "feeling: ...", "about: ...", in either of the
-    first two orders) or as JSON. Plain text without the extra lines is all message."""
-    stripped = text.strip()
-    if stripped.startswith("{"):
-        scene, reply = parse_reply(stripped)
-        return ReplyParts(scene, reply, *parse_feeling(stripped))
-    scene, message, feeling, about = "", [], "", ""
-    for line in stripped.split("\n"):
-        clean = line.strip()
-        if clean.lower().startswith("feeling:"):
-            feeling = clean[len("feeling:"):]
-        elif clean.lower().startswith("about:"):
-            about = clean[len("about:"):]
-        elif _is_note(clean) and not scene and not feeling:
-            scene = clean[1:-1].strip()
-        elif not feeling:
-            message.append(line)
-    return ReplyParts(scene, "\n".join(message).strip(), *_tidy_feeling(feeling, about))
+    """The parts of a JSON reply, even one cut off partway. Plain text is all message."""
+    scene, reply = parse_reply(text)
+    return ReplyParts(scene, reply, *parse_feeling(text))
 
 
 def written_reply(text: str) -> str | None:
-    """The message of a reply that is still being written, once the model has finished writing it."""
-    if text.lstrip().startswith("{"):
-        return parse_reply(text)[1] if JSON_REPLY_FINISHED.search(text) else None
-    for line in text.split("\n")[:-1]:  # only lines the model has finished
-        clean = line.strip()
-        if clean.lower().startswith(("feeling:", "about:")):
-            return None
-        if clean and not _is_note(clean):
-            return clean
-    return None
+    """The message of a JSON reply that is still being written, once the model has finished writing it."""
+    return parse_reply(text)[1] if JSON_REPLY_FINISHED.search(text) else None
+
+
+def narration_as_action(text: str, name: str) -> str:
+    """"Whiskers leans into the hand and purrs." -> "*leans into the hand and purrs*": an action the model
+    wrote without asterisks, which cat_only would otherwise drop. "" if it looks like speech."""
+    line = " ".join(text.split())
+    if not line or "*" in line or NOT_NARRATION.search(line) or SPEECH_IN_ACTION.search(line):
+        return ""
+    line = re.sub(rf"^(?:{re.escape(name)}|he|she|the cat)\s+", "", line, flags=re.I).rstrip(" .!")
+    return f"*{line}*" if line[:1].islower() else ""
 
 
 ACTION_FILLER = STOPWORDS | frozenset("""
