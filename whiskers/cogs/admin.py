@@ -25,7 +25,10 @@ ChannelTarget = Union[
 ]
 log = logging.getLogger("whiskers.admin")
 
-MODE_NAMES = {"allowlist": "only in allowed channels", "everywhere": "everywhere except blocked channels"}
+UNSET_RULE = {
+    "allowlist": "Whiskers stays out of it, since roaming is off",
+    "everywhere": "Whiskers roams there: it answers when called and joins in when it wants",
+}
 SPEECH_NAMES = {False: "cat sounds and actions only", True: "has learned to communicate"}
 
 
@@ -187,16 +190,14 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
 
     # ---- channels ----
 
-    @channel.command(name="allow", description="Let Whiskers live in a channel, thread or whole category")
+    @channel.command(name="allow", description="Make a channel, thread or category Whiskers' home: it answers every message")
     @app_commands.describe(channel="The channel, thread or category")
     async def channel_allow(self, interaction: discord.Interaction, channel: ChannelTarget) -> None:
         await self.bot.db.set_channel_rule(interaction.guild_id, channel.id, rule="allow")
-        settings = await self.bot.db.guild_settings(interaction.guild_id)
-        note = ""
-        if settings.mode == "everywhere":
-            note = "\n\nWhiskers already talks everywhere that isn't blocked, so this matters only in allowlist mode."
         await interaction.response.send_message(
-            f"🐾 Whiskers can now talk in {channel.mention}.{note}{self._access_warning(interaction.guild, channel)}",
+            f"🏠 {channel.mention} is now one of Whiskers' home channels: it answers every message there. When "
+            "several arrive while it's busy, it answers them together in one reply."
+            f"{self._access_warning(interaction.guild, channel)}",
             ephemeral=True,
         )
 
@@ -215,7 +216,7 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         await self.bot.db.set_channel_rule(interaction.guild_id, channel.id, rule=None, chattiness=None)
         settings = await self.bot.db.guild_settings(interaction.guild_id)
         await interaction.response.send_message(
-            f"{channel.mention} now follows the server default ({MODE_NAMES[settings.mode]}).", ephemeral=True,
+            f"{channel.mention} has no rule now. {UNSET_RULE[settings.mode]}.", ephemeral=True,
         )
 
     @channel.command(name="list", description="Show where Whiskers can talk")
@@ -228,22 +229,35 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         allowed = [f"<#{cid}>" for cid, r in rules.items() if r.rule == "allow"]
         blocked = [f"<#{cid}>" for cid, r in rules.items() if r.rule == "block"]
         chatty = [f"<#{cid}>: {r.chattiness}%" for cid, r in rules.items() if r.chattiness is not None]
-        result = embed("Where Whiskers lives", f"Mode: **{MODE_NAMES[settings.mode]}** (change with `/whiskers mode`)")
-        result.add_field(name="Allowed", value=", ".join(allowed) or "none yet: use `/whiskers channel allow`", inline=False)
+        roaming = "**on**: it answers when called and joins in when it wants, in every channel it can see" \
+            if settings.mode == "everywhere" else "**off** (turn it on with `/whiskers roam`)"
+        result = embed("Where Whiskers lives", f"Roaming: {roaming}")
+        result.add_field(name="Home channels (answers every message)",
+                         value=", ".join(allowed) or "none yet: use `/whiskers channel allow`", inline=False)
         result.add_field(name="Blocked", value=", ".join(blocked) or "none", inline=False)
-        result.add_field(name="Chattiness", value="\n".join([f"Server default: {settings.chattiness}%", *chatty]), inline=False)
+        result.add_field(name="Chattiness when roaming",
+                         value="\n".join([f"Server default: {settings.chattiness}%", *chatty]), inline=False)
         return result
 
-    @app_commands.command(name="mode", description="Talk only in allowed channels, or everywhere except blocked ones")
-    @app_commands.choices(mode=[
-        app_commands.Choice(name="Only in allowed channels (default)", value="allowlist"),
-        app_commands.Choice(name="Everywhere except blocked channels", value="everywhere"),
+    @app_commands.command(name="roam", description="Let Whiskers wander into every channel it can see, not just its homes")
+    @app_commands.describe(roaming="On: it answers when called and joins in when it wants, anywhere it can see. "
+                                   "Off: only its home channels.")
+    @app_commands.choices(roaming=[
+        app_commands.Choice(name="On: every channel it can see (except blocked ones)", value="everywhere"),
+        app_commands.Choice(name="Off: only its home channels", value="allowlist"),
     ])
-    async def mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]) -> None:
-        await self.bot.db.update_guild_settings(interaction.guild_id, mode=mode.value)
-        await interaction.response.send_message(f"Whiskers now talks {MODE_NAMES[mode.value]}.", ephemeral=True)
+    async def roam(self, interaction: discord.Interaction, roaming: app_commands.Choice[str]) -> None:
+        await self.bot.db.update_guild_settings(interaction.guild_id, mode=roaming.value)
+        if roaming.value == "everywhere":
+            text = ("🐾 Whiskers now roams every channel it can see. It answers when someone mentions it, replies to "
+                    "it or says its name, and joins in or reacts when something catches its interest "
+                    "(`/whiskers chattiness` sets how often). In its home channels it still answers everything. "
+                    "`/whiskers channel block` keeps it out of a channel.")
+        else:
+            text = "🏠 Whiskers stays in its home channels now (`/whiskers channel allow` adds one)."
+        await interaction.response.send_message(text, ephemeral=True)
 
-    @app_commands.command(name="chattiness", description="How often Whiskers joins conversations without being called")
+    @app_commands.command(name="chattiness", description="How often Whiskers joins in uninvited while roaming")
     @app_commands.describe(
         percent="Chance per message, 0 to 100. 0 means only when called. Default is 5.",
         channel="Set it for just this channel or category instead of the whole server",
@@ -257,13 +271,14 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             await self.bot.db.set_channel_rule(interaction.guild_id, channel.id, chattiness=percent)
             where = f"in {channel.mention}"
         await interaction.response.send_message(
-            f"Whiskers will join in on about {percent}% of messages {where}. It always answers when someone "
-            "mentions it, replies to it or says its name.", ephemeral=True,
+            f"While roaming, Whiskers will join in on about {percent}% of messages {where}. It always answers when "
+            "someone mentions it, replies to it or says its name, and answers everything in its home channels.",
+            ephemeral=True,
         )
 
     @app_commands.command(name="options", description="Turn Whiskers' extra behaviours on or off")
     @app_commands.describe(
-        reactions="React to messages with emoji now and then",
+        reactions="React to messages with emoji (it never needs the AI, so it's instant)",
         name_trigger="Saying Whiskers' name counts as talking to it",
         ping_on_reply="Ping people when Whiskers replies to them",
     )
@@ -304,6 +319,9 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         brain_lines = [f"State: **{engine.status}**", f"Model: {engine.description}"]
         if engine.threads:
             brain_lines.append(f"CPU threads: {engine.threads}")
+        if engine.chat_slots:
+            chores = " (+1 for background chores)" if engine.chore_slot is not None else ""
+            brain_lines.append(f"Channels kept ready: {engine.chat_slots}{chores}")
         if llm.tokens_per_second:
             brain_lines.append(f"Speed: {llm.tokens_per_second:.1f} tokens/s (a token is about ¾ of a word)")
         if llm.last_reply_seconds:

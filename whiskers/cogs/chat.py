@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, AsyncIterator
 import discord
 from discord.ext import commands
 
-from ..brain import Incoming, ReplyJob, chattiness_for, is_allowed
+from ..brain import Incoming, ReplyJob, chattiness_for, is_allowed, rule_for
 from ..db import GuildSettings
 from ..llm import LLMError
 from ..text import person_name, readable, split_message
@@ -58,12 +58,16 @@ class Chat(commands.Cog):
     @commands.Cog.listener()
     async def on_ready(self) -> None:
         self.bot.brain.user_id = self.bot.user.id
+        for guild in self.bot.guilds:
+            settings = await self.bot.db.guild_settings(guild.id)
+            self.bot.brain.set_owner(guild.id, settings.owner_id or guild.owner_id or 0)
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot or message.webhook_id or message.type not in CHAT_MESSAGE_TYPES:
             return
         bot = self.bot
+        home = False
         if message.guild is None:
             if not bot.cfg.allow_dms:
                 return
@@ -75,18 +79,20 @@ class Chat(commands.Cog):
             if not is_allowed(settings, rules, chain):
                 return  # Whiskers doesn't live here, so it doesn't read or remember this channel
             chattiness = chattiness_for(settings, rules, chain)
+            home = rule_for(rules, chain) == "allow"  # its home channels: it answers every message
 
         incoming = self._incoming(message)
         if incoming is None:
             return
         if message.guild is not None:
             incoming.owner_id = settings.owner_id or message.guild.owner_id or 0
-        decision = await bot.brain.observe(incoming, settings, chattiness)
+        decision = await bot.brain.observe(incoming, settings, chattiness, home=home)
         if decision.reaction:
             await self._react(message, decision.reaction)
         if not decision.reply or not self._can_send(message.channel):
             return
-        if not bot.engine.ready or bot.brain.too_busy(decision.reply):
+        # A home channel's waiting reply just takes in the new message, so it never counts as too busy.
+        if not bot.engine.ready or (decision.reply != "home" and bot.brain.too_busy(decision.reply)):
             if decision.reply == "direct":
                 await self._react(message, "💤")  # asleep (still loading) or too many people waiting
             return

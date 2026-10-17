@@ -5,17 +5,19 @@ messages into `Incoming` and sends what comes back.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
 import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import AsyncContextManager, Awaitable, Callable
 
 from .config import Config
-from .db import ChannelRule, Database, Feeling, GuildSettings, Memory, Profile, StoredMessage, similar
-from .llm import LLMClient, LLMError, parse_json
+from .db import ChannelRule, Database, Feeling, GuildSettings, Journal, Memory, Profile, StoredMessage, similar
+from .llm import CHORES, ChatResult, LLMClient, LLMError, parse_json
 from .prompts import (
     PRONOUNS, REPLY_SCHEMA, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
     reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
@@ -31,14 +33,30 @@ log = logging.getLogger("whiskers.brain")
 CAT_WORDS = re.compile(
     r"\b(cats?|kitty|kitties|kittens?|meow\w*|purr\w*|treats?|tuna|fish|catnip|laser|mouse|mice|yarn|zoomies)\b", re.I,
 )
-REACTIONS: list[tuple[re.Pattern, list[str]]] = [
-    (re.compile(r"\b(good (kitty|cat|boy|girl)|pets?|pat(s|ting)?|scritch\w*|cuddl\w*|snuggl\w*)\b", re.I), ["😻", "😽"]),
-    (re.compile(r"\b(treats?|tuna|fish|salmon|chicken|snacks?|dinner|food)\b", re.I), ["🐟", "😋"]),
-    (re.compile(r"\b(baths?|vacuum|vet|dogs?|cucumber|spray bottle)\b", re.I), ["🙀", "😾"]),
-    (re.compile(r"\b(laser|mouse|mice|yarn|toy|string|birds?|bugs?)\b", re.I), ["👀"]),
-    (re.compile(r"\b(good ?night|gn|sleep\w*|naps?|tired|bed ?time)\b", re.I), ["💤", "😴"]),
+# Emoji Whiskers reacts with, by what a message is about, and the chance of reacting to each.
+INSULT = r"(ugly|stupid|dumb|worst|annoying|mid|fat)"
+REACTIONS: list[tuple[re.Pattern, list[str], float]] = [
+    (re.compile(r"\b(good (kitty|cat|boy|girl)|pets?|pat(s|ting)?|scritch\w*|cuddl\w*|snuggl\w*|hugs?|love (you|u)|ily)\b"
+                r"|[❤💕🥰😍]", re.I), ["😻", "😽", "💕"], 0.5),
+    (re.compile(r"\b(treats?|tuna|fish|salmon|chicken|snacks?|dinner|lunch|breakfast|food|hungry|pizza|sushi|ramen|"
+                r"tacos?|cooking)\b|[🍕🍣🍜🐟🍗🌮]", re.I), ["🐟", "😋", "👀"], 0.4),
+    (re.compile(r"\b(baths?|vacuum|vet|dogs?|pupp(y|ies)|cucumber|spray bottle|thunder|storm|fireworks)\b|[🐶🛁⛈]", re.I),
+     ["🙀", "😾"], 0.45),
+    (re.compile(r"\b(laser|mouse|mice|yarn|toys?|string|feathers?|birds?|bugs?|box(es)?|package)\b|[🐦📦🐭]", re.I),
+     ["👀", "😼"], 0.4),
+    (re.compile(r"\b(good ?night|gn+|sleep\w*|naps?|tired|bed ?time|exhausted)\b|[💤😴]", re.I), ["💤", "😴"], 0.45),
+    (re.compile(r"\b(good ?morning|gm|morning|woke up)\b|[☀🌅]", re.I), ["☀️", "😺"], 0.4),
+    (re.compile(r"\b(congrats|congratulations|happy birthday|hbd|we won|gg|let'?s go+|got the job|passed|promoted)\b"
+                r"|[🎉🥳🎂🏆]", re.I), ["🎉", "😸"], 0.5),
+    (re.compile(r"\b(sad|crying|cried|bad day|depressed|lonely|stressed|failed|hospital|miss (you|u|him|her))\b|[😢😞💔]",
+                re.I), ["😿", "🫂"], 0.45),
+    (re.compile(r"\b(lol|lmao+|lmfao|haha+|rofl|i'?m dead)\b|[😂🤣💀]", re.I), ["😹"], 0.2),
+    (re.compile(r"\b(cats?|kitty|kitties|kittens?|meow\w*|purr\w*)\b|[🐱😺😸🐈]", re.I), ["😼", "🐾"], 0.4),
+    (re.compile(r"\b(hi|hello|hey|hiya|welcome)\b|👋", re.I), ["👋", "😺"], 0.25),
+    (re.compile(r"\[(sends a (picture|video|gif)|shares a (TikTok|YouTube video|tweet))", re.I), ["👀"], 0.3),
 ]
 RANDOM_REACTIONS = ["🐾", "👀", "😺"]
+REACTION_GAP = 20  # seconds between reactions in a channel, so a busy chat isn't covered in emoji
 FALLBACK_ACTIONS = [
     "*stares at you, then slowly blinks*", "*flicks tail*", "mrrp?", "*yawns and stretches*", "*tilts head*",
 ]
@@ -48,6 +66,8 @@ HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usua
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
+# The reply field is finished once the model moves on to the next field; it's posted right then.
+REPLY_FINISHED = re.compile(r'"reply"\s*:\s*"(?:[^"\\]|\\.)*"\s*,')
 
 # How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
 # counts for more than a treat, so one kick out of a window takes a few kind days to make up for.
@@ -77,7 +97,9 @@ class Incoming:
 
 @dataclass
 class Decision:
-    reply: str | None = None  # "direct" (someone talked to Whiskers) or "ambient" (Whiskers butts in)
+    # "direct": someone talked to Whiskers. "home": a message in a channel where Whiskers answers everything.
+    # "ambient": Whiskers butts in on its own.
+    reply: str | None = None
     reaction: str | None = None
 
 
@@ -119,15 +141,13 @@ def relationship(chats: int, is_owner: bool = False, affection: float = 0.0, cho
     if is_owner:
         return "your human, the person you love most in the world"
     if chosen:
-        return "one of your chosen people: you love them almost as much as your human and go to them for cuddles"
+        return "one of your chosen people: you love them almost as much as your human"
     if affection <= -40:
-        return ("you can't stand them after how they've treated you: you hiss, swat or stalk off when they come "
-                "near. Only kindness over a long time could change that")
+        return "you can't stand them after how they've treated you: you hiss, swat or stalk off when they come near"
     if affection <= WARY_AT:
-        return ("you don't trust them after how they've treated you: ears back, you keep your distance and watch "
-                "their hands, though gentleness and treats could win you back")
+        return "you don't trust them after how they've treated you: ears back, you keep your distance, but kindness can win you back"
     if affection >= 35:
-        return "you really like them: you trust them and go to them for attention"
+        return "you really like them and go to them for attention"
     if chats >= 25:
         return "a good friend you trust"
     if chats >= 6 or affection >= 12:
@@ -178,6 +198,9 @@ class Brain:
         self.pronouns = PRONOUNS[cfg.cat_gender]
         self.user_id = 0  # the bot's Discord ID, set once logged in
         self._name_pattern = re.compile(rf"\b{re.escape(cfg.bot_name)}\b", re.I)
+        cat = rf"(cat|kitty|bot|{re.escape(cfg.bot_name)})"
+        insults = re.compile(rf"\b{INSULT}\b.{{0,20}}\b{cat}\b|\b{cat}\b.{{0,20}}\b{INSULT}\b|\bbad (cat|kitty)\b", re.I)
+        self._reactions = [(insults, ["😾"], 0.6), *REACTIONS]
         self._jobs: dict[tuple[int, int], ReplyJob] = {}
         self._last_spoke: dict[int, float] = {}
         self._last_spoke_to: dict[tuple[int, int], float] = {}
@@ -187,6 +210,10 @@ class Brain:
         self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
         self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
         self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
+        self._last_reacted: dict[int, float] = {}
+        self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
+        self._seen: dict[int, int] = {}  # channel -> newest message a posted reply had read
+        self._active_guild = 0
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -201,17 +228,26 @@ class Brain:
 
     # ---- noticing messages ----
 
-    async def observe(self, msg: Incoming, settings: GuildSettings, chattiness: int) -> Decision:
-        """Remember a message from a channel Whiskers lives in and decide whether to react."""
+    async def observe(self, msg: Incoming, settings: GuildSettings, chattiness: int, home: bool = False) -> Decision:
+        """Remember a message from a channel Whiskers lives in and decide whether to react.
+
+        In a home channel (one that's allowed with /whiskers channel allow) Whiskers answers every message."""
         await self.db.add_message(msg.guild_id, msg.channel_id, msg.message_id, msg.author_id, msg.author_name,
                                   msg.content, msg.created_at)
         self._last_message[msg.channel_id] = msg.message_id
+        if msg.guild_id:
+            self._active_guild = msg.guild_id
         if msg.owner_id:
             self._owners[msg.guild_id] = msg.owner_id
         profile = await self.db.profile(msg.guild_id, msg.author_id)
-        decision = self.decide(msg, settings, chattiness, fondness=self.fondness(msg, profile))
-        await self.db.touch_profile(msg.guild_id, msg.author_id, msg.author_name, chatted=decision.reply == "direct")
+        decision = self.decide(msg, settings, chattiness, fondness=self.fondness(msg, profile), home=home)
+        await self.db.touch_profile(msg.guild_id, msg.author_id, msg.author_name,
+                                    chatted=decision.reply in ("direct", "home"))
         return decision
+
+    def set_owner(self, guild_id: int, owner_id: int) -> None:
+        """Whiskers' human in a server, known before anyone talks (so its slots can be warmed up)."""
+        self._owners[guild_id] = owner_id
 
     @staticmethod
     def fondness(msg: Incoming, profile: Profile | None) -> float:
@@ -223,7 +259,7 @@ class Brain:
         return 1.0
 
     def decide(self, msg: Incoming, settings: GuildSettings, chattiness: int, now: float | None = None,
-               fondness: float = 1.0) -> Decision:
+               fondness: float = 1.0, home: bool = False) -> Decision:
         now = time.time() if now is None else now
         decision = Decision()
         talking_to_me = msg.is_dm or msg.mentions_me or msg.replies_to_me or (
@@ -231,6 +267,8 @@ class Brain:
         )
         if talking_to_me:
             decision.reply = "direct"
+        elif home:
+            decision.reply = "home"
         else:
             chance = chattiness / 100
             if now - self._last_spoke_to.get((msg.channel_id, msg.author_id), 0) < 120:
@@ -242,17 +280,31 @@ class Brain:
             chance *= fondness
             if chance and self.rng.random() < min(chance, 0.9):
                 decision.reply = "ambient"
-        if settings.reactions and decision.reply is None:
-            decision.reaction = self._pick_reaction(msg.content)
+        if settings.reactions and not msg.is_dm:
+            # Reactions are cheap: no model call. Fewer when Whiskers is also going to answer.
+            scale = 1.0 if decision.reply in (None, "ambient") else 0.4
+            decision.reaction = self._pick_reaction(msg, now, fondness, scale)
+            if decision.reply == "ambient" and decision.reaction and self.rng.random() < 0.5:
+                decision.reply = None  # the reaction says enough
         return decision
 
-    def _pick_reaction(self, content: str) -> str | None:
-        for pattern, emojis in REACTIONS:
-            if pattern.search(content) and self.rng.random() < 0.35:
-                return self.rng.choice(emojis)
-        if self.rng.random() < 0.01:
-            return self.rng.choice(RANDOM_REACTIONS)
-        return None
+    def _pick_reaction(self, msg: Incoming, now: float, fondness: float = 1.0, scale: float = 1.0) -> str | None:
+        if now - self._last_reacted.get(msg.channel_id, 0) < REACTION_GAP:
+            return None
+        emoji = None
+        for pattern, emojis, chance in self._reactions:
+            if pattern.search(msg.content) and self.rng.random() < chance * scale:
+                emoji = self.rng.choice(emojis)
+                break
+        if emoji is None and fondness <= 0.5 and self.rng.random() < 0.1 * scale:
+            emoji = "😾"  # someone Whiskers doesn't trust
+        elif emoji is None and fondness >= 1.5 and self.rng.random() < 0.04 * scale:
+            emoji = self.rng.choice(["😻", "😽"])  # its human or one of its people
+        elif emoji is None and self.rng.random() < 0.02 * scale:
+            emoji = self.rng.choice(RANDOM_REACTIONS)
+        if emoji:
+            self._last_reacted[msg.channel_id] = now
+        return emoji
 
     def last_message_id(self, channel_id: int) -> int | None:
         return self._last_message.get(channel_id)
@@ -265,7 +317,10 @@ class Brain:
         return self.scheduler.pending_replies >= self.cfg.max_queue
 
     def submit(self, kind: str, msg: Incoming) -> ReplyJob | None:
-        """Queue a reply. None if an existing queued reply already covers this message."""
+        """Queue a reply. None if an existing queued reply already covers this message.
+
+        In a home channel, messages that arrive while Whiskers is busy are answered together in one reply,
+        so it never falls minutes behind a fast chat."""
         key = (msg.channel_id, msg.author_id if kind == "direct" else 0)
         existing = self._jobs.get(key)
         if existing and not existing.started:
@@ -274,10 +329,10 @@ class Brain:
         if kind == "ambient" and any(k[0] == msg.channel_id for k in self._jobs):
             return None
         if kind == "direct":
-            ambient = self._jobs.get((msg.channel_id, 0))
-            if ambient and not ambient.started:
-                ambient.cancelled = True  # someone is talking to Whiskers; that reply covers it
-                del self._jobs[ambient.key]
+            room = self._jobs.get((msg.channel_id, 0))
+            if room and not room.started:
+                room.cancelled = True  # someone is talking to Whiskers; that reply covers the rest too
+                del self._jobs[room.key]
         job = ReplyJob(kind, msg, key)
         self._jobs[key] = job
         return job
@@ -293,11 +348,22 @@ class Brain:
                 if job.cancelled or self.already_answered(job):
                     return None
                 job.started = True
-                async with typing():
-                    text = await self.compose(job.message, job.kind)
-                message_id = await deliver(text)
+                posted: list[int | None] = []
+                async with AsyncExitStack() as stack:
+                    await stack.enter_async_context(typing())
+
+                    async def post(text: str) -> None:
+                        await stack.aclose()  # stop "typing..." as the message appears
+                        posted.append(await deliver(text))
+
+                    # The message is posted as soon as it's written; compose finishes Whiskers' notes after.
+                    text = await self.compose(job.message, job.kind, ready=post)
+                message_id = posted[0] if posted else None
                 if message_id is not None:
                     await self.record_own_message(job.message, message_id, text, time.time())
+                    channel = job.message.channel_id
+                    self._seen[channel] = max(self._seen.get(channel, 0),
+                                              self._read_upto.get(channel, job.message.message_id))
                 return text
         finally:
             if self._jobs.get(job.key) is job:
@@ -311,6 +377,8 @@ class Brain:
         msg = job.message
         if job.kind == "direct":
             return self._last_answered.get((msg.channel_id, msg.author_id), 0) > msg.message_id
+        if job.kind == "home":  # only if a reply was written after reading this message
+            return self._seen.get(msg.channel_id, 0) >= msg.message_id
         return self._last_own.get(msg.channel_id, 0) > msg.message_id
 
     async def record_own_message(self, msg: Incoming, message_id: int, text: str, created_at: float) -> None:
@@ -368,11 +436,10 @@ class Brain:
             is_owner = profile.user_id == msg.owner_id
             line = f"{profile.name}: {relationship(profile.chats, is_owner, profile.affection, profile.chosen)}."
             if profile.facts:
-                line += " " + "; ".join(profile.facts[-6:]) + "."
-            felt = [f for f in profile.feelings if f.feeling != "neutral"][-5:]
+                line += " " + "; ".join(profile.facts[-4:]) + "."
+            felt = [f for f in profile.feelings if f.feeling != "neutral"][-3:]
             if felt:
-                line += " Things they've done: " + "; ".join(
-                    f"{f.about} (you {f.feeling} it, {ago(now - f.at)})" for f in reversed(felt)) + "."
+                line += " You " + "; ".join(f"{f.feeling} {f.about} ({ago(now - f.at)})" for f in reversed(felt)) + "."
             notes.append(line)
         for memory in memories:
             notes.append(f"You remember ({ago(now - memory.created_at)}): {memory.content}")
@@ -390,6 +457,10 @@ class Brain:
         elif kind == "direct":
             notes.append(f'{msg.author_name} {said}: "{latest}". React to it the way a cat would, with no '
                          f"words, carrying on from what's been happening. {feeling}")
+        elif kind == "home":  # Whiskers' own channel: it answers everything, meant for it or not
+            notes.append(f'{msg.author_name} just said or did: "{latest}". It may or may not be meant for you. React '
+                         f"the way a cat would{', in your own way' if can_speak else ', with no words'}, carrying on "
+                         f"from what's been happening. {feeling}")
         else:
             notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                          f"Join in the way a cat would, or just do your own cat thing nearby. {feeling}")
@@ -416,11 +487,29 @@ class Brain:
         """Whiskers' own past messages with any human words removed, so old slips don't encourage new ones."""
         return [replace(r, content=cat_only(r.content) or "*meows*") if r.is_self else r for r in rows]
 
-    async def compose(self, msg: Incoming, kind: str) -> str:
+    async def system_prompt(self, guild_id: int, journal: Journal | None = None) -> str:
+        journal = journal or await self.db.journal(guild_id)
+        owner_id = self._owners.get(guild_id, 0)
+        chosen = [p.name for p in await self.db.chosen_people(guild_id) if p.user_id != owner_id]
+        return reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak,
+                                   await self._owner_name(guild_id), self.pronouns, chosen)
+
+    @property
+    def _system_in_first_turn(self) -> bool:
+        preset = self.cfg.preset if self.cfg.llm_backend == "managed" else None
+        return bool(preset and preset.system_in_first_turn)
+
+    async def compose(self, msg: Incoming, kind: str, ready: Callable[[str], Awaitable[None]] | None = None) -> str:
+        """Write Whiskers' reply to a message.
+
+        `ready` is awaited once with the message as soon as the model has written it; the model then
+        finishes its private notes (how the person made Whiskers feel) while the message is already posted.
+        """
         journal = await self.db.journal(msg.guild_id)
         rows = self.window(msg.channel_id, await self.db.recent_messages(msg.channel_id, self.cfg.history_messages))
         if not journal.can_speak:
             rows = self.as_cat(rows)
+        self._read_upto[msg.channel_id] = max([r.message_id for r in rows if not r.is_self] + [msg.message_id])
         people = [msg.author_id]
         for row in reversed(rows[-10:]):
             if not row.is_self and row.author_id not in people:
@@ -434,10 +523,7 @@ class Brain:
             if all(m.id != memory.id for m in memories):
                 memories.append(memory)
 
-        owner = await self._owner_name(msg.guild_id)
-        chosen = [p.name for p in await self.db.chosen_people(msg.guild_id) if p.user_id != msg.owner_id]
-        system = reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak, owner,
-                                     self.pronouns, chosen)
+        system = await self.system_prompt(msg.guild_id, journal)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
         scene, scene_at = self._scenes.get(msg.channel_id, ("", 0.0))
         if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
@@ -447,29 +533,82 @@ class Brain:
         props = keywords(" ".join([msg.content] + [r.content for r in rows[-12:] if not r.is_self]), limit=40)
         repeating = repeated_actions(recent_own, ignore={self.name, *names, *props})
         news = [n for p in profiles if (n := self._news.pop((msg.guild_id, p.user_id), None))]
-        notes = self.notes(msg, kind, profiles, memories[:4], journal.can_speak, scene, repeating, news=news)
-        preset = self.cfg.preset if self.cfg.llm_backend == "managed" else None
-        messages = reply_messages(system, rows, notes, self.name,
-                                  system_in_first_turn=bool(preset and preset.system_in_first_turn))
+        notes = self.notes(msg, kind, profiles, memories[:3], journal.can_speak, scene, repeating, news=news)
+        slot = self.llm.slot_for(msg.channel_id)
 
-        result = await self.llm.chat(
-            messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
-            json_schema=REPLY_SCHEMA, extra=ANTI_REPEAT,
-        )
+        def finish(raw: str) -> str:
+            text = as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],
+                                       self.pronouns["himself"])
+            if not journal.can_speak:
+                text = drop_repeated_sounds(cat_only(text), recent_own)
+            return text or self.rng.choice(FALLBACK_ACTIONS)
+
+        streamed = [""]
+        reply_written = asyncio.Event()
+
+        def watch(text: str) -> None:
+            streamed[0] = text
+            if ready and not reply_written.is_set() and REPLY_FINISHED.search(text):
+                reply_written.set()
+
+        async def generate() -> ChatResult:
+            history = rows
+            while True:
+                messages = reply_messages(system, history, notes, self.name,
+                                          system_in_first_turn=self._system_in_first_turn)
+                try:
+                    return await self.llm.chat(
+                        messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
+                        json_schema=REPLY_SCHEMA, extra=ANTI_REPEAT, on_text=watch, slot=slot,
+                    )
+                except LLMError as error:
+                    if "context" not in str(error).lower() or len(history) <= 4:
+                        raise
+                    log.warning("The prompt didn't fit; trying again with less chat history.")
+                    history = history[len(history) // 2:]
+
+        chat = asyncio.ensure_future(generate())
+        text = None
+        try:
+            if ready:
+                waiting = asyncio.ensure_future(reply_written.wait())
+                try:
+                    await asyncio.wait({chat, waiting}, return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    waiting.cancel()
+                if reply_written.is_set() and not chat.done():
+                    text = finish(parse_reply(streamed[0])[1])
+                    await ready(text)
+            try:
+                result = await chat
+            except LLMError as error:
+                if text is None:
+                    raise
+                log.warning("The model stopped after the reply was posted: %s", error)
+                return text
+        finally:
+            if not chat.done():
+                chat.cancel()
         self.llm.last_reply_seconds = result.seconds
+        self.llm.remember_prefix(slot, system)
+        log.debug("Reply in %s: read %d prompt tokens (%d cached), wrote %d tokens in %.1fs", msg.channel_id,
+                  result.prompt_tokens, result.cached_tokens, result.tokens, result.seconds)
         scene, reply = parse_reply(result.text)
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
             log.debug("Scene in %s: %s", msg.channel_id, scene)
         self._raw[msg.channel_id] = reply
-        text = as_stage_directions(clean_reply(reply, self.name, names), self.pronouns["his"],
-                                   self.pronouns["himself"])
-        if not journal.can_speak:
-            text = drop_repeated_sounds(cat_only(text), recent_own)
+        if text is None:
+            text = finish(reply)
+            if ready:
+                await ready(text)
         self._felt.pop(msg.channel_id, None)
-        if kind == "direct":  # chiming in on other people's chat says little about how they treat Whiskers
-            await self.feel(msg, *parse_feeling(result.text))
-        return text or self.rng.choice(FALLBACK_ACTIONS)
+        if kind in ("direct", "home"):  # chiming in on other people's chat says little about how they treat Whiskers
+            try:
+                await self.feel(msg, *parse_feeling(result.text))
+            except Exception:  # the message is already posted; don't lose it over a bookkeeping error
+                log.exception("Couldn't record how %s made Whiskers feel", msg.author_name)
+        return text
 
     async def feel(self, msg: Incoming, feeling: str, about: str) -> str | None:
         """Remember how what someone just did made Whiskers feel, and let it add up.
@@ -515,6 +654,9 @@ class Brain:
     # ---- background chores: memories and growing up ----
 
     async def next_chore(self) -> Callable[[], Awaitable[object]] | None:
+        cold = await self._cold_slot()
+        if cold:
+            return lambda: self._warm_up(*cold)
         rows = await self.db.summary_batch()
         if rows:
             return lambda: self._summarize(rows)
@@ -523,13 +665,37 @@ class Brain:
             return lambda: self.reflect(due[0])
         return None
 
+    async def _cold_slot(self) -> tuple[int, str] | None:
+        """A conversation slot that doesn't have the current system prompt cached yet, if any.
+
+        Reading the system prompt is the slowest part of a reply that has nothing cached (on a CPU that can
+        be most of a minute), so it's done ahead of time while nobody is talking: after a restart, after
+        the journal changes, and after Whiskers chooses someone new.
+        """
+        if self.cfg.llm_backend != "managed":
+            return None
+        guild_id = self._active_guild or next(iter(self._owners), 0)
+        if not guild_id:
+            return None
+        system = await self.system_prompt(guild_id)
+        for slot in self.llm.conversation_slots():
+            if self.llm.cached_prefix(slot) != system:
+                return slot, system
+        return None
+
+    async def _warm_up(self, slot: int, system: str) -> None:
+        messages = reply_messages(system, [], [], self.name, system_in_first_turn=self._system_in_first_turn)
+        result = await self.llm.chat(messages, max_tokens=1, temperature=0.0, slot=slot)
+        self.llm.remember_prefix(slot, system)
+        log.info("Conversation slot %d is warmed up (read %d prompt tokens in %.0fs).", slot, result.prompt_tokens,
+                 result.seconds)
+
     async def _summarize(self, rows: list[StoredMessage]) -> None:
         guild_id, channel_id = rows[0].guild_id, rows[0].channel_id
         try:
             result = await self.llm.chat(
                 summary_messages(self.name, transcript(rows, self.name), self.pronouns), max_tokens=350,
-                temperature=0.3,
-                json_schema=SUMMARY_SCHEMA,
+                temperature=0.3, json_schema=SUMMARY_SCHEMA, slot=self.llm.slot_for(CHORES),
             )
         except LLMError as error:
             failures = self._chore_failures[rows[0].id] = self._chore_failures.get(rows[0].id, 0) + 1
@@ -581,7 +747,7 @@ class Brain:
             reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000),
                                 can_speak=journal.can_speak, may_learn=may_learn,
                                 owner=await self._owner_name(guild_id), pronouns=self.pronouns, people=people),
-            max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn),
+            max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn), slot=self.llm.slot_for(CHORES),
         )
         data = parse_json(result.text)
         if data and isinstance(data.get("journal"), list):

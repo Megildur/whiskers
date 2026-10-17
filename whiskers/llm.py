@@ -17,6 +17,7 @@ from .engine import Engine
 log = logging.getLogger("whiskers.llm")
 
 THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
+CHORES = "chores"  # the conversation key for background chores
 
 
 class LLMError(Exception):
@@ -28,6 +29,8 @@ class ChatResult:
     text: str
     tokens: int
     seconds: float
+    prompt_tokens: int = 0  # prompt tokens the model had to read (llama-server only)
+    cached_tokens: int = 0  # prompt tokens reused from its cache instead
 
 
 class LLMClient:
@@ -38,6 +41,45 @@ class LLMClient:
         self.tokens_per_second: float | None = None
         self.prompt_tokens_per_second: float | None = None
         self.last_reply_seconds: float | None = None
+        self._starts = 0
+        self._slots: dict[object, int] = {}  # conversation -> its llama-server slot, least recently used first
+        self._prefixes: dict[int, str] = {}  # slot -> the system prompt it has cached
+
+    # ---- llama-server slots: one per conversation, so each keeps its own cache ----
+
+    def _check_restart(self) -> None:
+        if self.engine.starts != self._starts:  # a fresh server has nothing cached
+            self._starts = self.engine.starts
+            self._slots.clear()
+            self._prefixes.clear()
+
+    def conversation_slots(self) -> list[int]:
+        return list(range(self.engine.chat_slots))
+
+    def slot_for(self, conversation: object) -> int | None:
+        """The slot a conversation (a channel, or CHORES) uses. None lets the server choose."""
+        self._check_restart()
+        if conversation == CHORES:
+            return self.engine.chore_slot
+        count = self.engine.chat_slots
+        if not count:
+            return None
+        if conversation in self._slots:
+            slot = self._slots.pop(conversation)
+        else:
+            used = set(self._slots.values())
+            free = [s for s in range(count) if s not in used]
+            slot = free[0] if free else self._slots.pop(next(iter(self._slots)))  # take the least recently used
+        self._slots[conversation] = slot
+        return slot
+
+    def cached_prefix(self, slot: int) -> str | None:
+        self._check_restart()
+        return self._prefixes.get(slot)
+
+    def remember_prefix(self, slot: int | None, prefix: str) -> None:
+        if slot is not None:
+            self._prefixes[slot] = prefix
 
     async def close(self) -> None:
         if self._session:
@@ -63,9 +105,13 @@ class LLMClient:
         stop: list[str] | None = None,
         json_schema: dict | None = None,
         should_stop: Callable[[str], bool] | None = None,
+        on_text: Callable[[str], None] | None = None,
         extra: dict | None = None,
+        slot: int | None = None,
     ) -> ChatResult:
-        """Stream a chat completion. Cancelling the task closes the connection, which stops generation."""
+        """Stream a chat completion. Cancelling the task closes the connection, which stops generation.
+
+        `on_text` sees the text so far as it streams in. `slot` pins the request to a llama-server slot."""
         if not self.engine.ready:
             raise LLMError("the AI engine isn't ready yet")
         managed = self.cfg.llm_backend == "managed"
@@ -86,6 +132,8 @@ class LLMClient:
             }
         if managed:
             body.update(min_p=0.05, repeat_penalty=1.08, cache_prompt=True, **(extra or {}))
+            if slot is not None:
+                body["id_slot"] = slot
         else:
             body["stream_options"] = {"include_usage": True}
         headers = {"Authorization": f"Bearer {self.cfg.llm_api_key}"} if self.cfg.llm_api_key else {}
@@ -129,6 +177,8 @@ class LLMClient:
                         if piece:
                             parts.append(piece)
                             tokens = max(tokens, len(parts))
+                    if on_text and parts:
+                        on_text("".join(parts))
                     if should_stop and parts and should_stop("".join(parts)):
                         break
         except (aiohttp.ClientError, asyncio.TimeoutError) as error:
@@ -144,8 +194,11 @@ class LLMClient:
         text = THINK_BLOCK.sub("", "".join(parts))
         if "<think>" in text:  # thinking never finished; nothing usable after it
             text = text.split("<think>", 1)[0]
-        log.debug("Generated %d tokens in %.1fs", tokens, seconds)
-        return ChatResult(text=text.strip(), tokens=tokens, seconds=seconds)
+        prompt_tokens, cached_tokens = int(timings.get("prompt_n") or 0), int(timings.get("cache_n") or 0)
+        log.debug("Read %d prompt tokens (%d cached) and wrote %d tokens in %.1fs", prompt_tokens, cached_tokens,
+                  tokens, seconds)
+        return ChatResult(text=text.strip(), tokens=tokens, seconds=seconds, prompt_tokens=prompt_tokens,
+                          cached_tokens=cached_tokens)
 
 
 def parse_json(text: str) -> dict | None:

@@ -65,28 +65,29 @@ COMMUNICATING_RULES = ROLEPLAY_RULES + """
 - One to three sentences. Never repeat what you did in your last few messages. No lists or headings."""
 
 # Replies come back as JSON: a short private note on the scene first (thinking before acting makes the
-# model follow the story much better), then how the person made Whiskers feel, then the message. The note
-# is kept and shown again next time, so it says what Whiskers does about the situation too. The feeling
-# builds up into how much Whiskers likes each person (brain.Brain.feel).
+# model follow the story much better), then the message, then how the person made Whiskers feel. The
+# message is posted as soon as it's written; the feeling is finished afterwards, so it costs no waiting.
+# The note is kept and shown again next time, so it says what Whiskers does about the situation too. The
+# feeling builds up into how much Whiskers likes each person (brain.Brain.feel).
 REPLY_FORMAT = """
 
 Answer in JSON with these fields, in this order:
-- "scene": a few private words about {name} in the third person ({he}/{him}): what's happening right now, how {name} feels, and what {he} does about it, for example "Brandon put down tuna; {name} is starving and dives in". Nobody sees this.
-- "feeling": how what the person you're answering just did makes {name} feel about them: "loved", "liked", "neutral", "disliked" or "hated". Ordinary chat is "neutral". Food, gentle affection and play are liked or loved; rough handling, scaring or hurting {name} is disliked or hated.
-- "about": unless the feeling is neutral, what they did as a short phrase without pronouns, like "tuna", "belly rubs", "tail pulling" or "being kicked out a window". Otherwise "".
-- "reply": your message to the chat."""
+- "scene": a private note about {name} in the third person ({he}/{him}), under 15 words: what's happening, how {he} feels and what {he} does, like "Brandon put down tuna; {name} is starving and dives in". Nobody sees this.
+- "reply": your message to the chat.
+- "feeling": how what the person you're answering just did made {name} feel about them: "loved", "liked", "neutral", "disliked" or "hated". Ordinary chat is "neutral". Food, gentle affection and play are liked or loved; rough handling, scaring or hurting {name} is disliked or hated.
+- "about": unless the feeling is neutral, what they did as a short phrase without pronouns, like "tuna", "belly rubs", "tail pulling" or "being kicked out a window". Otherwise ""."""
 
 FEELINGS = ["loved", "liked", "neutral", "disliked", "hated"]
 
 REPLY_SCHEMA = {
     "type": "object",
     "properties": {
-        "scene": {"type": "string", "maxLength": 160},
+        "scene": {"type": "string", "maxLength": 120},
+        "reply": {"type": "string", "maxLength": 700},
         "feeling": {"type": "string", "enum": FEELINGS},
         "about": {"type": "string", "maxLength": 60},
-        "reply": {"type": "string", "maxLength": 700},
     },
-    "required": ["scene", "feeling", "about", "reply"],
+    "required": ["scene", "reply", "feeling", "about"],
 }
 
 NOTES_HEADER = "({name}'s private notes, not part of the chat)"

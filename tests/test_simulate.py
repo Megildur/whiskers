@@ -2,23 +2,23 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+from fakes import ScriptedLLM
 from whiskers.db import Database
-from whiskers.llm import ChatResult
 from whiskers.scheduler import Scheduler
 from whiskers.simulate import (
     GROUPS, PACKS, SCENES, SETUPS, checks, count_replies, run_scenes, scenes_for, step_parts,
 )
 
 
-class FakeLLM:
+class FakeLLM(ScriptedLLM):
     def __init__(self):
+        super().__init__()
         self.calls = 0
-        self.last_reply_seconds = None
 
-    async def chat(self, messages, **kwargs):
+    async def answer(self, messages, kwargs):
         self.calls += 1
-        return ChatResult(json.dumps({"scene": f"scene {self.calls}", "feeling": "loved", "about": "chin scratches",
-                                      "reply": "*pounces on Angel's feet*"}), 5, 0.1)
+        return json.dumps({"scene": f"scene {self.calls}", "reply": "*pounces on Angel's feet*", "feeling": "loved",
+                           "about": "chin scratches"})
 
 
 def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_path):
@@ -111,10 +111,10 @@ def test_a_stuck_reply_stops_the_simulation_with_a_clear_message(cfg, tmp_path, 
     from whiskers.cogs.admin import Admin
 
     class StuckAfterTwo(FakeLLM):
-        async def chat(self, messages, **kwargs):
+        async def answer(self, messages, kwargs):
             if self.calls >= 2:
                 await asyncio.sleep(60)
-            return await super().chat(messages, **kwargs)
+            return await super().answer(messages, kwargs)
 
     monkeypatch.setattr(simulate, "REPLY_TIMEOUT", 0.2)
 

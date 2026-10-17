@@ -15,7 +15,10 @@ A step is (who, line) or (who, line, how).
   the room starts fresh and only what Whiskers remembers about people carries on.
 - how: "direct" (the default: they ping Whiskers or say its name), "reply" (they reply to Whiskers' last
   message), "chat" (people talking among themselves: Whiskers reads it but doesn't answer) or "chime"
-  (not meant for Whiskers, but it joins in anyway).
+  (not meant for Whiskers, but it answers anyway, as in its home channels; any "chat" lines just before
+  are answered in the same reply, as when several messages arrive while it's busy).
+
+Times are how long until the reply would be posted. Emoji reactions show up as "(reacts with ...)".
 
 The everyday Discord packs live in discord_scenes.py.
 """
@@ -540,23 +543,30 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 involved.add(user_id)
                 msg = Incoming(next(ids), guild_id, channel_id, user_id, user_name, text, time.time(),
                                mentions_me=how == "direct", replies_to_me=how == "reply", owner_id=owner_id)
-                await brain.observe(msg, GuildSettings(name_trigger=False), 0)
+                decision = await brain.observe(msg, GuildSettings(name_trigger=False), 0, home=how == "chime")
+                reacted = f"    (reacts with {decision.reaction})" if decision.reaction else ""
                 props.update(keywords(text, limit=20))
                 if how == "chat":
-                    lines.append(f"{user_name}: {text}")
+                    lines += [f"{user_name}: {text}"] + ([reacted] if reacted else [])
                     continue
                 started = time.monotonic()
+                posted: list[float] = []
+
+                async def ready(_text: str) -> None:
+                    posted.append(time.monotonic())
+
                 async with bot.scheduler.reply_turn():  # takes turns with real chat
-                    reply = await asyncio.wait_for(brain.compose(msg, "ambient" if how == "chime" else "direct"),
-                                                   timeout=REPLY_TIMEOUT)
-                seconds = time.monotonic() - started
+                    reply = await asyncio.wait_for(
+                        brain.compose(msg, "home" if how == "chime" else "direct", ready=ready), timeout=REPLY_TIMEOUT,
+                    )
+                seconds = (posted[0] if posted else time.monotonic()) - started
                 seconds_total += seconds
                 await brain.record_own_message(msg, next(ids), reply, time.time())
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
                 found = checks(reply, raw, replies, ignore=props)
                 replies.append(reply)
                 said = f"{user_name} (replying to {cat}): {text}" if how == "reply" else f"{user_name}: {text}"
-                lines += [said, f"    (scene: {note or '-'})"]
+                lines += [said] + ([reacted] if reacted else []) + [f"    (scene: {note or '-'})"]
                 if any(w.startswith("words were removed") for w in found):
                     lines.append(f"    (model wrote: {raw[:400]})")
                 lines.append(f"{cat}{' (chimes in)' if how == 'chime' else ''}: {reply}    [{seconds:.0f}s]")

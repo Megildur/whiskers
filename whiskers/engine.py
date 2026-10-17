@@ -36,6 +36,24 @@ class EngineError(Exception):
     pass
 
 
+# Context for one conversation: the system prompt, a busy stretch of chat, the private notes and the reply.
+MIN_SLOT_CONTEXT = 6144
+
+
+def slot_layout(total_context: int, wanted: int) -> tuple[int, bool, int]:
+    """How to split the context: (conversation slots, whether chores get a slot of their own, context per slot).
+
+    Each conversation (channel) keeps its own slot, so llama.cpp never has to re-read a channel's history
+    because Whiskers answered somewhere else in between. Background chores get their own slot when there's
+    room, so writing memories doesn't push a conversation out either.
+    """
+    fits = total_context // MIN_SLOT_CONTEXT
+    if fits < 2:
+        return 1, False, total_context
+    chats = max(1, min(wanted, fits - 1))
+    return chats, True, total_context // (chats + 1)
+
+
 class Engine:
     """Something that serves an OpenAI-compatible chat API."""
 
@@ -45,6 +63,9 @@ class Engine:
     status: str = "starting"
     description: str = ""
     threads: int | None = None
+    chat_slots: int = 0  # llama-server slots kept for conversations; 0 lets the server choose
+    chore_slot: int | None = None  # a slot only background chores use
+    starts: int = 0  # bumped every time the server (and so its cache) starts fresh
 
     async def start(self) -> None:
         raise NotImplementedError
@@ -223,15 +244,18 @@ class ManagedEngine(Engine):
     async def _launch(self, binary: Path, model: Path) -> None:
         port = self.cfg.llm_port or _free_port()
         self.base_url = f"http://127.0.0.1:{port}/v1"
+        chats, chore_slot, per_slot = slot_layout(self.cfg.llm_context, max(1, self.cfg.llm_slots))
+        slots = chats + int(chore_slot)
         args = [
             str(binary), "-m", str(model), "--host", "127.0.0.1", "--port", str(port),
-            "-c", str(self.cfg.llm_context), "-np", str(max(1, self.cfg.llm_slots)),
+            "-c", str(per_slot * slots), "-np", str(slots),
             "-t", str(self.threads), "-tb", str(self.threads), "--alias", self.model_name,
         ]
         optional = [
             ("--no-webui", []),
             ("--jinja", []),
-            ("--kv-unified", []),  # slots share the context, so one long prompt can use all of it
+            # Every slot keeps its own cache. With a shared ("unified") cache, using one slot wipes the others.
+            ("--no-kv-unified", []),
             ("--cache-reuse", ["256"]),  # reuse cached chat history even after the window moves
             ("--cache-ram", [str(self.cfg.llm_cache_ram_mb)]),  # default is 8 GB, far too much here
         ]
@@ -265,9 +289,13 @@ class ManagedEngine(Engine):
                     self._proc.kill()
                     raise EngineError("llama-server took more than 15 minutes to load the model")
                 await asyncio.sleep(1)
+        self.chat_slots, self.chore_slot = chats, (chats if chore_slot else None)
+        self.starts += 1
         self.status = "ready"
         self.ready = True
-        log.info("The AI engine is ready (model loaded in %.0fs).", time.monotonic() - started)
+        log.info("The AI engine is ready (model loaded in %.0fs). It keeps %d conversation%s ready with %d tokens "
+                 "each%s.", time.monotonic() - started, chats, "s" if chats != 1 else "", per_slot,
+                 ", plus one for background chores" if chore_slot else "")
 
     # ---- llama.cpp binary ----
 

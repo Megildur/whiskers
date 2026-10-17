@@ -1,5 +1,6 @@
 import random
 
+from fakes import ScriptedLLM
 from whiskers.brain import Brain, Incoming, chattiness_for, is_allowed
 from whiskers.db import ChannelRule, GuildSettings, StoredMessage
 from whiskers.scheduler import Scheduler
@@ -82,13 +83,56 @@ def test_cat_does_not_chime_in_right_after_speaking(cfg):
     assert brain.decide(incoming("nice weather", author=2), GuildSettings(), 90, now=1010.0).reply is None
 
 
-def test_reactions_only_when_not_replying_and_enabled(cfg):
+class EagerRandom(random.Random):
+    """random() always returns 0, so every chance fires."""
+
+    def random(self):
+        return 0.0
+
+
+def test_reactions_fit_the_message_and_can_be_turned_off(cfg):
     brain = make_brain(cfg, rng=random.Random(1))
-    seen = {brain.decide(incoming("who wants treats"), GuildSettings(), 0).reaction for _ in range(200)}
-    assert seen & {"🐟", "😋"}
-    assert brain.decide(incoming("treats", mentions_me=True), GuildSettings(), 0).reaction is None
+
+    def reactions(text, **kwargs):
+        return {brain.decide(incoming(text, channel=100 + i, **kwargs), GuildSettings(), 0, now=1000.0).reaction
+                for i in range(300)} - {None}
+
+    assert reactions("who wants treats") <= {"🐟", "😋", "👀", "🐾", "😺"} and reactions("who wants treats") & {"🐟", "😋"}
+    assert "😹" in reactions("LMAOOO 💀")
+    assert "🎉" in reactions("I GOT THE JOB!!!")
+    assert "😿" in reactions("i had a really bad day")
+    assert "😾" in reactions("whiskers is so ugly lol", mentions_me=True)  # even while answering, now and then
+    assert "👀" in reactions("[sends a gif: cat vibing]")
     off = GuildSettings(reactions=False)
     assert all(brain.decide(incoming("treats"), off, 0).reaction is None for _ in range(50))
+
+
+def test_reactions_are_spaced_out_and_can_replace_a_chime_in(cfg):
+    brain = make_brain(cfg, rng=EagerRandom())
+    assert brain.decide(incoming("tuna!", channel=5), GuildSettings(), 0, now=1000.0).reaction
+    assert brain.decide(incoming("tuna!", channel=5), GuildSettings(), 0, now=1010.0).reaction is None
+    assert brain.decide(incoming("tuna!", channel=5), GuildSettings(), 0, now=1025.0).reaction
+    swapped = brain.decide(incoming("tuna!", channel=6), GuildSettings(), 50, now=1000.0)
+    assert swapped.reply is None and swapped.reaction  # an emoji instead of writing a whole reply
+
+
+def test_home_channels_answer_every_message_and_batch_them_when_busy(cfg):
+    brain = make_brain(cfg)
+    quiet = GuildSettings(reactions=False)
+    assert brain.decide(incoming("lol", author=2), quiet, 0, home=True).reply == "home"
+    assert brain.decide(incoming("whiskers hi", author=2), quiet, 0, home=True).reply == "direct"
+    assert brain.decide(incoming("lol", author=2), quiet, 0).reply is None  # elsewhere it only chimes in sometimes
+
+    first = brain.submit("home", incoming("lol", author=2, message_id=10))
+    first.started = True  # Whiskers is writing a reply that read message 10
+    second = brain.submit("home", incoming("what", author=3, message_id=11))
+    assert second is not None
+    assert brain.submit("home", incoming("ok", author=4, message_id=12)) is None  # joins the waiting reply
+    assert second.message.message_id == 12
+    brain._seen[10] = 10  # the first reply was posted, but it hadn't read messages 11 and 12
+    assert not brain.already_answered(second)
+    brain._seen[10] = 12
+    assert brain.already_answered(second)
 
 
 # ---- queueing ----
@@ -193,8 +237,7 @@ def test_how_whiskers_treats_people_follows_how_they_treated_it(cfg):
                         news=["Tearyu did something"])
     line = next(n for n in notes if n.startswith("Tearyu:"))
     assert "you don't trust them" in line
-    assert line.endswith("Things they've done: tail pulling (you hated it, 10 minutes ago); "
-                         "a treat (you liked it, 1 day ago).")
+    assert line.endswith("You hated tail pulling (10 minutes ago); liked a treat (1 day ago).")
     assert "Tearyu did something" in notes
     assert notes[-1].endswith('Your "feeling" is about user2.')
 
@@ -213,17 +256,15 @@ def test_people_whiskers_likes_get_more_chime_ins(cfg):
 
 # ---- speaking: just a cat until the server teaches it ----
 
-class FakeLLM:
+class FakeLLM(ScriptedLLM):
     def __init__(self, reply):
+        super().__init__()
         self.reply = reply
         self.calls = []
-        self.last_reply_seconds = None
 
-    async def chat(self, messages, **kwargs):
-        from whiskers.llm import ChatResult
-
+    async def answer(self, messages, kwargs):
         self.calls.append((messages, kwargs))
-        return ChatResult(self.reply, 10, 0.1)
+        return self.reply
 
 
 def brain_with(cfg, tmp_path, reply):
@@ -305,7 +346,7 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
         last_turn = brain.llm.calls[-1][0][-1]["content"]
         assert "Where things stood after your last message: Brandon gave me catnip and I'm going wild" in last_turn
         assert "You've been repeating yourself (" in last_turn and "purrs" in last_turn
-        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "feeling", "about", "reply"]
+        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply", "feeling", "about"]
         await brain.db.close()
 
     asyncio.run(go())
