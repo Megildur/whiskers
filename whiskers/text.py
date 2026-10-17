@@ -41,6 +41,8 @@ def describe_link(url: str) -> str:
     host = parsed.netloc.lower().removeprefix("www.").removeprefix("m.")
     path = parsed.path.rstrip("/")
     slug = path.rsplit("/", 1)[-1]
+    if host.endswith("imgflip.com") and "/gif/" in path:
+        return "[sends a gif]"
     if host.endswith("tenor.com") or host.endswith("giphy.com") or slug.lower().endswith(".gif"):
         if "/view/" in path:  # tenor.com/view/cat-vibing-gif-18913937
             words = re.sub(r"-gif-\d+$", "", slug)

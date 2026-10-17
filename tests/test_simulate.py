@@ -187,6 +187,7 @@ def test_checks_flag_common_problems():
     assert "repeats: purrs" in checks("*purrs loudly*", "", ["*purrs*", "*naps*"])
     assert checks("*pounces on the toy mouse*", "*pounces on the toy mouse*", ["*naps*"]) == []
     assert checks("*wags his tail*", "", []) == ["dog-like: wags"]
+    assert checks("*sniffs the phone screen*", "", []) == ["touches a screen: phone"]
     # The people and things in the scene aren't Whiskers repeating itself
     earlier = ["*bats the toy toward Tearyu*", "*chases the toy*"]
     assert checks("*pounces on the toy at Tearyu's feet*", "", earlier, ignore={"Tearyu", "toy"}) == []

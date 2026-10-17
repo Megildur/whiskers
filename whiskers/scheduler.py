@@ -2,7 +2,7 @@
 
 A CPU can only run one generation at full speed, so everything takes turns. Replies to people always
 go first: if a background chore (writing memories, updating the journal) is running when someone
-talks to Whiskers, the chore is cancelled and retried later.
+talks to Whiskers, the chore is cancelled and retried later, and a simulation waits between replies.
 """
 from __future__ import annotations
 
@@ -40,6 +40,22 @@ class Scheduler:
                 yield
         finally:
             self._waiting -= 1
+            self.last_reply_at = time.monotonic()
+
+    @asynccontextmanager
+    async def background_turn(self) -> AsyncIterator[None]:
+        """A turn for simulations: whenever someone is waiting for a real reply, they go first."""
+        while True:
+            while self._waiting:
+                await asyncio.sleep(0.25)
+            await self._lock.acquire()
+            if not self._waiting:
+                break
+            self._lock.release()  # someone started talking to Whiskers meanwhile
+        try:
+            yield
+        finally:
+            self._lock.release()
             self.last_reply_at = time.monotonic()
 
     async def run_chore(self, make_chore: Callable[[], Awaitable[object]]) -> bool:

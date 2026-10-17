@@ -90,3 +90,12 @@ def test_replies_say_how_the_person_made_whiskers_feel():
     messages = reflection_messages("Whiskers", "P", "- j", [], "chat", can_speak=False, may_learn=False,
                                    people=["Tearyu: someone it doesn't trust; didn't like tail pulling"])
     assert "- Tearyu: someone it doesn't trust; didn't like tail pulling" in messages[1]["content"]
+
+
+def test_screens_and_out_of_character_talk_arent_part_of_the_room():
+    from whiskers.prompts import reply_system_prompt
+
+    system = reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
+    assert "only on people's screens, not in the room" in system and "nobody is showing you a phone" in system
+    assert "out of character" in system and "no looking for the remote" in system
+    assert "showing something on their phone" not in system

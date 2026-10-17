@@ -214,6 +214,7 @@ class Brain:
         self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
         self._seen: dict[int, int] = {}  # channel -> newest message a posted reply had read
         self._active_guild = 0
+        self.slot_key: object | None = None  # which cache slot replies use; None means one per channel
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -534,7 +535,7 @@ class Brain:
         repeating = repeated_actions(recent_own, ignore={self.name, *names, *props})
         news = [n for p in profiles if (n := self._news.pop((msg.guild_id, p.user_id), None))]
         notes = self.notes(msg, kind, profiles, memories[:3], journal.can_speak, scene, repeating, news=news)
-        slot = self.llm.slot_for(msg.channel_id)
+        slot = self.llm.slot_for(msg.channel_id if self.slot_key is None else self.slot_key)
 
         def finish(raw: str) -> str:
             text = as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],

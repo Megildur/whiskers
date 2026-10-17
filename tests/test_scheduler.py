@@ -55,3 +55,25 @@ def test_replies_take_turns():
         assert peak == 1
 
     asyncio.run(go())
+
+
+def test_real_replies_go_ahead_of_a_running_simulation():
+    async def go():
+        scheduler = Scheduler()
+        order = []
+
+        async def simulation():
+            for i in range(3):
+                async with scheduler.background_turn():
+                    order.append(f"sim {i}")
+                    await asyncio.sleep(0.05)
+
+        async def person():
+            await asyncio.sleep(0.02)  # arrives while the first simulation reply is being written
+            async with scheduler.reply_turn():
+                order.append("real")
+
+        await asyncio.gather(simulation(), person())
+        assert order == ["sim 0", "real", "sim 1", "sim 2"]  # waits for one simulation reply at most
+
+    asyncio.run(go())

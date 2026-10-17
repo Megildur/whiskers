@@ -132,6 +132,7 @@ def test_links_reach_whiskers_as_what_people_see():
     assert readable("lol https://tenor.com/view/cat-vibing-cat-jam-gif-18913937") == "lol [sends a gif: cat vibing cat jam]"
     assert readable("https://giphy.com/gifs/cat-funny-kitten-3o7TKSjRrfIPjeiVyM") == "[sends a gif: cat funny kitten]"
     assert readable("https://media.tenor.com/abc/tenor.gif") == "[sends a gif]"
+    assert readable("https://imgflip.com/gif/8abc12") == readable("https://i.imgflip.com/8abc12.gif") == "[sends a gif]"
     assert readable("https://cdn.discordapp.com/attachments/1/2/IMG_123.PNG") == "[sends a picture]"
     assert readable("https://www.youtube.com/watch?v=dQw4w9WgXcQ") == "[shares a YouTube video]"
     assert readable("https://www.tiktok.com/@cats/video/72345 the end") == "[shares a TikTok] the end"

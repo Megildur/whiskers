@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 from . import discord_scenes
 from .brain import FALLBACK_ACTIONS, Brain, Incoming
 from .db import Database, Feeling, GuildSettings
+from .llm import CHORES
 from .text import is_cat_sound, keywords, readable, repeated_actions
 
 if TYPE_CHECKING:
@@ -395,6 +396,7 @@ log = logging.getLogger("whiskers.simulate")
 REPLY_TIMEOUT = 240  # seconds; a normal reply takes well under a minute
 FIRST_PERSON = re.compile(r"\*[^*]*\b(I|I'm|me|my|myself)\b[^*]*\*")
 DOG_LIKE = re.compile(r"\b(wag(s|ging|ged)?|panting|barks?|barking|woofs?)\b", re.I)
+SCREEN = re.compile(r"\b(phones?|screens?|links?|gifs?|pictures?)\b", re.I)  # things only on people's screens
 
 
 def scenes_for(pack: str | None, scene: str | None = None) -> list[str]:
@@ -455,6 +457,8 @@ def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozense
         found.append("I/my inside an action")
     if DOG_LIKE.search(reply):
         found.append("dog-like: " + DOG_LIKE.search(reply).group(0).lower())
+    if SCREEN.search(reply):
+        found.append("touches a screen: " + SCREEN.search(reply).group(0).lower())
     if len(reply) > 350:
         found.append(f"long ({len(reply)} characters)")
     repeats = repeated_actions(earlier[-2:] + [reply], ignore=ignore)
@@ -521,6 +525,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
         for number, name in enumerate(scenes):
             brain = Brain(cfg, db, bot.llm, bot.scheduler, rng=random.Random(number))
             brain.user_id = bot.user.id if bot.user else 0
+            brain.slot_key = CHORES  # keep real channels' cached conversations where they are
             fill = {"name": cat, "owner": owner_name, **brain.pronouns}
             channel_id = next(rooms)  # a fresh "room" per scene
             lines.append(f"===== {name} =====")
@@ -555,7 +560,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 async def ready(_text: str) -> None:
                     posted.append(time.monotonic())
 
-                async with bot.scheduler.reply_turn():  # takes turns with real chat
+                async with bot.scheduler.background_turn():  # real chat goes first
                     reply = await asyncio.wait_for(
                         brain.compose(msg, "home" if how == "chime" else "direct", ready=ready), timeout=REPLY_TIMEOUT,
                     )

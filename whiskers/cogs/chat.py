@@ -106,9 +106,12 @@ class Chat(commands.Cog):
         content = readable(message.clean_content)
         extras = []
         for attachment in message.attachments:
-            kind = (attachment.content_type or "").split("/")[0]
+            content_type = attachment.content_type or ""
+            if content_type == "image/gif" or attachment.filename.lower().endswith(".gif"):
+                extras.append("[sends a gif]")
+                continue
             extras.append({"image": "[sends a picture]", "video": "[sends a video]", "audio": "[sends a voice clip]"}
-                          .get(kind, "[sends a file]"))
+                          .get(content_type.split("/")[0], "[sends a file]"))
         extras += [f"[sends a sticker: {sticker.name}]" for sticker in message.stickers]
         if not content and message.embeds:
             extras.append("[shares a link]")

@@ -544,6 +544,17 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("regular", "[sends a picture] rate my homemade sushi", "chime"),
             ("friend", "{name} is staring at it lol"),
         ],
+        # From a real chat: GIFs and plain-text roleplay in Whiskers' home channel
+        "tv-and-gifs": [
+            ("regular", "[sends a gif]", "chime"),
+            ("regular", "[sends a picture]", "chime"),
+            ("regular", "the heck, why does the cat do that", "chime"),
+            ("regular", "TV is on by me and Tom & Jerry is playing", "chime"),
+            ("regular", "I have the remote and I change it to an NHL match", "chime"),
+            ("regular", "I point at {owner} with the remote", "chime"),
+            ("regular", "[sends a gif: cat biting finger]", "chime"),
+            ("regular", "[sends a gif: cat hiding in cabinet]", "chime"),
+        ],
     },
     # A gaming server's everyday life
     "discord-gaming": {
@@ -953,6 +964,15 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
         ],
         "whisper": [
             ("shy", "*whispers* {name} are you awake"),
+        ],
+        "out-of-character": [
+            ("owner", "hi", "chime"),
+            ("regular", "lol it's not supposed to do that", "chime"),
+            ("owner", "it always prefers me because it's programmed with me as its owner", "chime"),
+            ("owner", "but it can choose other people too depending on how they treat it", "chime"),
+            ("owner", "and it can kinda see gifs", "chime"),
+            ("regular", "possible", "chime"),
+            ("owner", "{name} come here buddy"),
         ],
         "discord-time": [
             ("mod", "server maintenance <t:1767225600:R>", "chime"),
