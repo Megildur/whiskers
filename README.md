@@ -155,6 +155,9 @@ On a CPU, a reply costs two things: reading the conversation (the prompt) and wr
 - **Each busy channel keeps its own cache.** llama.cpp remembers what it has already read, so a reply only reads the new messages. Every channel Whiskers talks in gets its own slot (as many as `LLM_CONTEXT` allows), and background chores like writing memories use a separate one, so answering in another channel or writing memories never makes it re-read a conversation.
 - **It gets ready while nobody's talking.** Its personality, journal and rules are the longest part of every prompt. Whiskers reads them into each slot ahead of time: after a restart, after its journal changes and after it chooses a new favourite person.
 - **The message is posted as soon as it's written.** The model writes a short private scene note, then the message, then how the person made Whiskers feel. The message goes out right away while it finishes the rest.
+- **Little is written before the message.** On a CPU, writing is the slowest part (with `nemo-12b`, about 4 tokens, or 3 words, a second), so the scene note is capped at about 10 words and the notes Whiskers reads before each reply are kept short. `SCENE_NOTE=after` in `.env` moves the note behind the message, which makes replies about 4 seconds faster but may follow roleplay a little less well. `MODEL=nemo-12b-fast` is the same model in a smaller file, about 10% faster.
+
+With `nemo-12b` on 8 shared CPU cores, a reply takes about 12 to 15 seconds to appear (about 9 to 11 with `SCENE_NOTE=after`). `qwen3-4b` is about three times faster but much weaker at roleplay.
 - **Emoji reactions need no AI at all**, and in roaming channels a reaction often replaces a chime-in.
 
 ## Settings in .env
@@ -163,6 +166,7 @@ The commented `.env.example` lists them all. The ones you might change:
 
 - `MODEL`: which model Whiskers thinks with.
   - `nemo-12b`: best roleplay and understanding of what's going on. Needs about 10 GB of RAM; about 3x slower than `qwen3-4b`.
+  - `nemo-12b-fast`: the same model in a smaller file, about 10% faster with nearly the same quality.
   - `llama3.1-8b`: good roleplay, faster. Needs about 7 GB of RAM; about 2x slower than `qwen3-4b`.
   - `qwen3-4b` (default): quick, for 4 to 8 GB servers, but weaker at roleplay.
   - `llama3.2-3b` if replies are too slow, or `qwen2.5-1.5b` on a 2 to 3 GB server.
@@ -170,6 +174,7 @@ The commented `.env.example` lists them all. The ones you might change:
   After changing it, restart. The new model downloads once; you can delete the old `.gguf` from `models/` to free space.
 - `LLM_THREADS`: CPU threads for the model. Leave it empty; Whiskers reads your plan's CPU limit.
 - `LLM_CONTEXT`: memory for conversations. Each channel Whiskers keeps ready gets 6144 tokens, plus one share for background chores: `18432` keeps two channels ready (16 GB server with `nemo-12b`), `12288` keeps one, and `8192` suits small servers. Lower it if the server runs out of memory.
+- `SCENE_NOTE`: `before` (default) or `after`. `after` makes replies a few seconds faster; see [How replies stay fast](#how-replies-stay-fast).
 - `TIMEZONE`: so Whiskers knows when it's night (for example `America/New_York`).
 - `CAT_GENDER`: `boy` (default) or `girl`, for the pronouns the story uses.
 - `OWNER_IDS`: your Discord user ID, to use the admin commands in any server.

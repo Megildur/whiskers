@@ -68,31 +68,41 @@ COMMUNICATING_RULES = ROLEPLAY_RULES + """
 - You're still a cat: simple, short thoughts with cat logic, mixed with *actions in asterisks* and the occasional cat sound.
 - One to three sentences. Never repeat what you did in your last few messages. No lists or headings."""
 
-# Replies come back as JSON: a short private note on the scene first (thinking before acting makes the
-# model follow the story much better), then the message, then how the person made Whiskers feel. The
-# message is posted as soon as it's written; the feeling is finished afterwards, so it costs no waiting.
-# The note is kept and shown again next time, so it says what Whiskers does about the situation too. The
-# feeling builds up into how much Whiskers likes each person (brain.Brain.feel).
-REPLY_FORMAT = """
-
-Answer in JSON with these fields, in this order:
-- "scene": a private note about {name} in the third person ({he}/{him}), under 15 words: what's happening, how {he} feels and what {he} does, like "Brandon put down tuna; {name} is starving and dives in". Nobody sees this.
-- "reply": your message to the chat.
-- "feeling": how what the person you're answering just did felt to {name}: "loved", "liked", "neutral", "disliked" or "hated". Judge the act itself, not the person: a treat or gentle hand from someone {he} doesn't trust yet is still liked, and a water spray from {his} favourite person is still hated. Talking, questions, saying {his} name and chat that isn't about {him} are "neutral". Food, gentle affection, play and comfort are liked or loved; rough handling, scaring, trapping or hurting {name} is disliked or hated.
+# Replies come back as JSON: a short private note on the scene (writing it first, as a moment of thought,
+# makes the model follow the story better), the message, then how the person made Whiskers feel. The
+# message is posted as soon as it's written; the rest is finished afterwards, so it costs no waiting.
+# The note is kept and shown again next time. On a CPU every word the model writes before the message
+# costs time, so the note is short, and SCENE_NOTE=after moves it behind the message for faster replies.
+# The feeling builds up into how much Whiskers likes each person (brain.Brain.feel).
+SCENE_FIRST = (
+    '- "scene": a private note about {name} in the third person ({he}/{him}), under 10 words: what just happened '
+    'and how {he} feels, like "Brandon put down tuna; {name} is starving". Nobody sees this.'
+)
+SCENE_LAST = (
+    '- "scene": a private note for next time about {name} in the third person ({he}/{him}): what\'s happening now and '
+    'how {he} feels, like "Brandon put down tuna; {name} is eating". Nobody sees this.'
+)
+REPLY_FIELD = '- "reply": your message to the chat.'
+FEELING_FIELDS = """- "feeling": how what the person you're answering just did felt to {name}: "loved", "liked", "neutral", "disliked" or "hated". Judge the act itself, not the person: a treat or gentle hand from someone {he} doesn't trust yet is still liked, and a water spray from {his} favourite person is still hated. Talking, questions, saying {his} name and chat that isn't about {him} are "neutral". Food, gentle affection, play and comfort are liked or loved; rough handling, scaring, trapping or hurting {name} is disliked or hated.
 - "about": unless the feeling is neutral, what they did as a short phrase without pronouns, like "tuna", "belly rubs", "tail pulling" or "being kicked out a window". Otherwise ""."""
 
 FEELINGS = ["loved", "liked", "neutral", "disliked", "hated"]
 
-REPLY_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "scene": {"type": "string", "maxLength": 120},
-        "reply": {"type": "string", "maxLength": 700},
-        "feeling": {"type": "string", "enum": FEELINGS},
-        "about": {"type": "string", "maxLength": 60},
-    },
-    "required": ["scene", "reply", "feeling", "about"],
-}
+
+def reply_format(scene_first: bool = True) -> str:
+    fields = [SCENE_FIRST, REPLY_FIELD] if scene_first else [REPLY_FIELD, SCENE_LAST]
+    return "\n\nAnswer in JSON with these fields, in this order:\n" + "\n".join(fields) + "\n" + FEELING_FIELDS
+
+
+def reply_schema(scene_first: bool = True) -> dict:
+    scene = {"type": "string", "maxLength": 70 if scene_first else 110}
+    reply = {"type": "string", "maxLength": 700}
+    first = {"scene": scene, "reply": reply} if scene_first else {"reply": reply, "scene": scene}
+    properties = {**first, "feeling": {"type": "string", "enum": FEELINGS}, "about": {"type": "string", "maxLength": 60}}
+    return {"type": "object", "properties": properties, "required": list(properties)}
+
+
+REPLY_SCHEMA = reply_schema()
 
 NOTES_HEADER = "({name}'s private notes, not part of the chat)"
 
@@ -142,9 +152,9 @@ def owner_paragraph(name: str, owner: str | None, chosen: list[str] | None = Non
 
 
 def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bool, owner: str | None = None,
-                        pronouns: dict | None = None, chosen: list[str] | None = None) -> str:
+                        pronouns: dict | None = None, chosen: list[str] | None = None, scene_first: bool = True) -> str:
     pronouns = pronouns or PRONOUNS["boy"]
-    rules = ((COMMUNICATING_RULES if can_speak else CAT_RULES) + REPLY_FORMAT).format(name=name, **pronouns)
+    rules = ((COMMUNICATING_RULES if can_speak else CAT_RULES) + reply_format(scene_first)).format(name=name, **pronouns)
     return (
         f"{personality}\n"
         f"You're a {pronouns['gender']} cat; people call you {pronouns['he']}/{pronouns['him']}.\n\n"

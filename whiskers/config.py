@@ -35,6 +35,13 @@ MODEL_PRESETS: dict[str, ModelPreset] = {
         "than qwen3-4b.",
         system_in_first_turn=True, temperature=0.9,
     ),
+    "nemo-12b-fast": ModelPreset(
+        ("bartowski/Mistral-Nemo-Instruct-2407-GGUF",),
+        "IQ4_XS", "Mistral-Nemo-Instruct-2407-IQ4_XS.gguf", 6.7,
+        "The same model as nemo-12b in a smaller file, so it writes about 10% faster with nearly the same "
+        "quality. Needs about 9 GB of RAM.",
+        system_in_first_turn=True, temperature=0.9,
+    ),
     "llama3.1-8b": ModelPreset(
         ("bartowski/Meta-Llama-3.1-8B-Instruct-GGUF", "lmstudio-community/Meta-Llama-3.1-8B-Instruct-GGUF"),
         "Q4_K_M", "Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", 4.9,
@@ -139,6 +146,7 @@ class Config:
 
     max_reply_tokens: int
     temperature: float
+    scene_note: str  # "before" the message (follows roleplay best) or "after" it (replies come faster)
     history_messages: int
     reflect_every: int
     reflect_min_hours: float
@@ -166,6 +174,9 @@ def load_config() -> Config:
     gender = _str("CAT_GENDER", "boy").lower()
     if gender not in ("boy", "girl"):
         raise SystemExit("CAT_GENDER in .env must be 'boy' or 'girl'")
+    scene_note = _str("SCENE_NOTE", "before").lower()
+    if scene_note not in ("before", "after"):
+        raise SystemExit("SCENE_NOTE in .env must be 'before' or 'after'")
     return Config(
         discord_token=_str("DISCORD_TOKEN"),
         bot_name=_str("BOT_NAME", "Whiskers") or "Whiskers",
@@ -190,6 +201,7 @@ def load_config() -> Config:
         llm_api_key=_str("LLM_API_KEY"),
         max_reply_tokens=_int("MAX_REPLY_TOKENS", 300),
         temperature=_float("TEMPERATURE", MODEL_PRESETS[model].temperature if model in MODEL_PRESETS else 0.85),
+        scene_note=scene_note,
         history_messages=max(6, _int("HISTORY_MESSAGES", 24)),
         reflect_every=max(5, _int("REFLECT_EVERY", 25)),
         reflect_min_hours=_float("REFLECT_MIN_HOURS", 2.0),

@@ -19,8 +19,8 @@ from .config import Config
 from .db import ChannelRule, Database, Feeling, GuildSettings, Journal, Memory, Profile, StoredMessage, similar
 from .llm import CHORES, ChatResult, LLMClient, LLMError, parse_json
 from .prompts import (
-    PRONOUNS, REPLY_SCHEMA, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
-    reflection_schema, reply_messages, reply_system_prompt, summary_messages, transcript,
+    PRONOUNS, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
+    reflection_schema, reply_messages, reply_schema, reply_system_prompt, summary_messages, transcript,
 )
 from .scheduler import Scheduler
 from .text import (
@@ -66,8 +66,8 @@ HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usua
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
-# The reply field is finished once the model moves on to the next field; it's posted right then.
-REPLY_FINISHED = re.compile(r'"reply"\s*:\s*"(?:[^"\\]|\\.)*"\s*,')
+# The reply field is finished at its closing quote (the JSON grammar allows nothing else there); it's posted then.
+REPLY_FINISHED = re.compile(r'"reply"\s*:\s*"(?:[^"\\]|\\.)*"')
 
 # How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
 # counts for more than a treat, so one kick out of a window takes a few kind days to make up for.
@@ -217,6 +217,8 @@ class Brain:
         self._seen: dict[int, int] = {}  # channel -> newest message a posted reply had read
         self._active_guild = 0
         self.slot_key: object | None = None  # which cache slot replies use; None means one per channel
+        self.scene_first = cfg.scene_note == "before"
+        self.reply_schema = reply_schema(self.scene_first)
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -434,12 +436,12 @@ class Brain:
             part = "evening"
         else:
             part = "night"
-        notes = [f"It's {local:%A} {part} ({local:%I:%M %p}).".replace("(0", "(")]
+        notes = [f"{local:%A} {part}, {local:%I:%M %p}.".replace(", 0", ", ")]
         for profile in profiles:
             is_owner = profile.user_id == msg.owner_id
             line = f"{profile.name}: {relationship(profile.chats, is_owner, profile.affection, profile.chosen)}."
             if profile.facts:
-                line += " " + "; ".join(profile.facts[-4:]) + "."
+                line += " " + "; ".join(profile.facts[-3:]) + "."
             felt = [f for f in profile.feelings if f.feeling != "neutral"][-3:]
             if felt:
                 line += " You " + "; ".join(f"{f.feeling} {f.about} ({ago(now - f.at)})" for f in reversed(felt)) + "."
@@ -451,7 +453,7 @@ class Brain:
             notes.append(f"Where things stood after your last message: {scene}")
         if repeating:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
-        latest = msg.content if len(msg.content) <= 300 else msg.content[:300] + "..."
+        latest = msg.content if len(msg.content) <= 160 else msg.content[:160] + "..."
         feeling = f'Your "feeling" is about {msg.author_name}.'
         said = "replied to your message" if msg.replies_to_me and not msg.mentions_me else "just said or did"
         if msg.owner_id and msg.author_id == msg.owner_id:
@@ -460,15 +462,15 @@ class Brain:
             notes.append(f'{msg.author_name} {said}: "{latest}". Answer them as {self.name}, carrying on '
                          f"from what's been happening. {feeling}")
         elif kind == "direct":
-            notes.append(f'{msg.author_name} {said}: "{latest}". React to it the way a cat would, with no '
-                         f"words, carrying on from what's been happening. {feeling}")
-        elif kind == "home":  # Whiskers' own channel: it answers everything, meant for it or not
-            notes.append(f'{msg.author_name} just said or did: "{latest}". It may or may not be meant for you. React '
-                         f"the way a cat would{', in your own way' if can_speak else ', with no words'}, carrying on "
+            notes.append(f'{msg.author_name} {said}: "{latest}". React as a cat would, with no words, carrying on '
                          f"from what's been happening. {feeling}")
+        elif kind == "home":  # Whiskers' own channel: it answers everything, meant for it or not
+            notes.append(f'{msg.author_name} {said}: "{latest}". It may not be meant for you. React as a cat '
+                         f"would{', in your own way' if can_speak else ', with no words'}, carrying on from what's been "
+                         f"happening. {feeling}")
         else:
             notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
-                         f"Join in the way a cat would, or just do your own cat thing nearby. {feeling}")
+                         f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
         return notes
 
     def last_feeling(self, channel_id: int) -> tuple[str, str, float, str | None] | None:
@@ -497,7 +499,7 @@ class Brain:
         owner_id = self._owners.get(guild_id, 0)
         chosen = [p.name for p in await self.db.chosen_people(guild_id) if p.user_id != owner_id]
         return reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak,
-                                   await self._owner_name(guild_id), self.pronouns, chosen)
+                                   await self._owner_name(guild_id), self.pronouns, chosen, self.scene_first)
 
     @property
     def _system_in_first_turn(self) -> bool:
@@ -538,7 +540,7 @@ class Brain:
         props = keywords(" ".join([msg.content] + [r.content for r in rows[-12:] if not r.is_self]), limit=40)
         repeating = repeated_actions(recent_own, ignore={self.name, *names, *props})
         news = [n for p in profiles if (n := self._news.pop((msg.guild_id, p.user_id), None))]
-        notes = self.notes(msg, kind, profiles, memories[:3], journal.can_speak, scene, repeating, news=news)
+        notes = self.notes(msg, kind, profiles, memories[:2], journal.can_speak, scene, repeating, news=news)
         slot = self.llm.slot_for(msg.channel_id if self.slot_key is None else self.slot_key)
 
         def finish(raw: str) -> str:
@@ -564,7 +566,7 @@ class Brain:
                 try:
                     return await self.llm.chat(
                         messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
-                        json_schema=REPLY_SCHEMA, extra=ANTI_REPEAT, on_text=watch, slot=slot,
+                        json_schema=self.reply_schema, extra=ANTI_REPEAT, on_text=watch, slot=slot,
                     )
                 except LLMError as error:
                     if "context" not in str(error).lower() or len(history) <= 4:
@@ -599,7 +601,7 @@ class Brain:
         log.debug("Reply in %s: read %d prompt tokens (%d cached), wrote %d tokens in %.1fs", msg.channel_id,
                   result.prompt_tokens, result.cached_tokens, result.tokens, result.seconds)
         scene, reply = parse_reply(result.text)
-        if len(scene) >= REPLY_SCHEMA["properties"]["scene"]["maxLength"] - 2:
+        if len(scene) >= self.reply_schema["properties"]["scene"]["maxLength"] - 2:
             scene = re.split(r"[;,.](?=[^;,.]*$)", scene)[0].rstrip(" ;,.") or scene  # cut off mid-word: end it cleanly
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())

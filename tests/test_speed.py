@@ -160,3 +160,37 @@ def test_a_scene_note_cut_off_at_its_limit_ends_cleanly(cfg, tmp_path):
         await brain.db.close()
 
     asyncio.run(go())
+
+
+def test_scene_note_after_the_message_posts_even_sooner(cfg, tmp_path):
+    from whiskers.prompts import reply_schema
+
+    assert list(reply_schema(False)["properties"]) == ["reply", "scene", "feeling", "about"]
+    assert reply_schema(True)["properties"]["scene"]["maxLength"] < reply_schema(False)["properties"]["scene"]["maxLength"]
+
+    class ReplyFirst(Model):
+        async def answer(self, messages, kwargs):
+            self.calls.append((messages, kwargs))
+            return json.dumps({"reply": "*purrs*", "scene": "Brandon pets him; he purrs", "feeling": "liked",
+                               "about": "pets"})
+
+    async def go():
+        llm = ReplyFirst()
+        brain = brain_for(dataclasses.replace(cfg, scene_note="after"), tmp_path, llm)
+        await brain.db.connect()
+        msg = message(mentions_me=True)
+        await brain.observe(msg, GuildSettings(), 0)
+        posted = []
+
+        async def ready(text):
+            posted.append((text, llm.finished))
+
+        assert await brain.compose(msg, "direct", ready=ready) == "*purrs*"
+        assert posted == [("*purrs*", 0)]  # posted before the note and feeling were written
+        assert brain.last_scene(10) == "Brandon pets him; he purrs" and brain.last_feeling(10)[0] == "liked"
+        schema = llm.calls[0][1]["json_schema"]
+        assert list(schema["properties"])[0] == "reply"
+        assert '"reply": your message to the chat.\n- "scene": a private note for next time' in llm.calls[0][0][0]["content"]
+        await brain.db.close()
+
+    asyncio.run(go())

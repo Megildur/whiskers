@@ -510,7 +510,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
     ids = itertools.count(int(time.time() * 1000) << 22)  # increasing, like Discord message IDs
     lines = [] if lines is None else lines
     lines += [f"Whiskers simulation · code {getattr(bot, 'version', 'unknown')} · model: {bot.engine.description} · "
-              f"temperature {cfg.temperature} · {cfg.cat_gender}", ""]
+              f"temperature {cfg.temperature} · {cfg.cat_gender} · scene note {cfg.scene_note} the message", ""]
     total, done = count_replies(scenes), 0
     flagged: dict[str, int] = {}
     seconds_total = 0.0

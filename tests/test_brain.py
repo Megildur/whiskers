@@ -200,14 +200,14 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
         [Memory(1, "Alice gave Whiskers a laser pointer.", 0.0)],
         now=3 * 86400.0,
     )
-    assert notes[0].startswith("It's Sunday night")
+    assert notes[0] == "Sunday night, 12:00 AM."
     assert "Alice: a good friend you trust. works night shifts." in notes
     assert notes[2] == "You remember (3 days ago): Alice gave Whiskers a laser pointer."
-    assert notes[-1].startswith('user1 just said or did: "whiskers". React to it the way a cat would, with no words')
+    assert notes[-1].startswith('user1 just said or did: "whiskers". React as a cat would, with no words')
     talking = brain.notes(incoming("whiskers"), "direct", [], [], can_speak=True)
     assert talking[-1].startswith('user1 just said or did: "whiskers". Answer them as Whiskers')
     replied = brain.notes(incoming("LMAO 💀", replies_to_me=True), "direct", [], [])
-    assert replied[-1].startswith('user1 replied to your message: "LMAO 💀". React to it the way a cat would')
+    assert replied[-1].startswith('user1 replied to your message: "LMAO 💀". React as a cat would')
 
 
 def test_whiskers_adores_its_human_and_warms_up_to_others(cfg):
