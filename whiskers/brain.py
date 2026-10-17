@@ -19,13 +19,14 @@ from .config import Config
 from .db import ChannelRule, Database, Feeling, GuildSettings, Journal, Memory, Profile, StoredMessage, similar
 from .llm import CHORES, ChatResult, LLMClient, LLMError, parse_json
 from .prompts import (
-    PRONOUNS, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, reflection_messages,
-    reflection_schema, reply_messages, reply_schema, reply_system_prompt, summary_messages, transcript,
+    PRONOUNS, SCENE_LIMIT, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, prefill_messages,
+    reflection_messages, reflection_schema, reply_grammar, reply_messages, reply_schema, reply_system_prompt,
+    summary_messages, transcript,
 )
 from .scheduler import Scheduler
 from .text import (
-    ago, as_stage_directions, cat_only, clean_reply, drop_repeated_sounds, keywords, parse_feeling, parse_reply,
-    repeated_actions,
+    ago, as_stage_directions, cat_only, clean_reply, drop_repeated_sounds, keywords, read_reply, repeated_actions,
+    written_reply,
 )
 
 log = logging.getLogger("whiskers.brain")
@@ -66,8 +67,6 @@ HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usua
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
-# The reply field is finished at its closing quote (the JSON grammar allows nothing else there); it's posted then.
-REPLY_FINISHED = re.compile(r'"reply"\s*:\s*"(?:[^"\\]|\\.)*"')
 
 # How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
 # counts for more than a treat, so one kick out of a window takes a few kind days to make up for.
@@ -102,6 +101,17 @@ class Decision:
     # "ambient": Whiskers butts in on its own.
     reply: str | None = None
     reaction: str | None = None
+
+
+@dataclass
+class Prepared:
+    """Notes for a channel's next reply, already read into the model's cache (Brain.prepare_next)."""
+    notes: list[str]
+    people: set[int]
+    memories: set[int]
+    rows: list[int]  # the chat the notes follow, ending with Whiskers' latest message
+    system: str
+    part_of_day: str
 
 
 @dataclass(eq=False)
@@ -214,11 +224,15 @@ class Brain:
         self._warmed: dict[tuple[int, int], tuple[int, float]] = {}  # (guild, person) -> (day, affection gained)
         self._last_reacted: dict[int, float] = {}
         self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
+        self._prepared: dict[int, Prepared] = {}  # channel -> notes for its next reply, already read
         self._seen: dict[int, int] = {}  # channel -> newest message a posted reply had read
         self._active_guild = 0
         self.slot_key: object | None = None  # which cache slot replies use; None means one per channel
         self.scene_first = cfg.scene_note == "before"
-        self.reply_schema = reply_schema(self.scene_first)
+        # llama.cpp gets the reply as four plain lines (fewer tokens to write than JSON); other servers get JSON.
+        self.lines = cfg.llm_backend == "managed"
+        self.reply_schema = None if self.lines else reply_schema(self.scene_first)
+        self.reply_grammar = reply_grammar(self.scene_first) if self.lines else None
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
@@ -369,6 +383,11 @@ class Brain:
                     channel = job.message.channel_id
                     self._seen[channel] = max(self._seen.get(channel, 0),
                                               self._read_upto.get(channel, job.message.message_id))
+                    if self.scheduler.pending_replies <= 1:  # nobody else is waiting: get the next reply ready
+                        try:
+                            await self.prepare_next(job.message)
+                        except Exception as error:  # only a head start; the next reply works without it
+                            log.warning("Couldn't get the next reply ready: %s", error)
                 return text
         finally:
             if self._jobs.get(job.key) is job:
@@ -418,60 +437,76 @@ class Brain:
             start = rows[-keep].id if len(rows) > keep else rows[0].id
             self._window_start[channel_id] = start
         rows = [row for row in rows if row.id >= start]
-        while len(rows) > 2 and sum(min(len(r.content), MESSAGE_CHAR_LIMIT) for r in rows) > HISTORY_CHAR_BUDGET:
-            rows = rows[1:]
+
+        def size(rows: list[StoredMessage]) -> int:
+            return sum(min(len(r.content), MESSAGE_CHAR_LIMIT) for r in rows)
+
+        if len(rows) > 2 and size(rows) > HISTORY_CHAR_BUDGET:  # too long: drop a chunk, not one message at a time
+            while len(rows) > 2 and size(rows) > HISTORY_CHAR_BUDGET * 0.75:
+                rows = rows[1:]
+            self._window_start[channel_id] = rows[0].id
         return [replace(row, content=row.content[:MESSAGE_CHAR_LIMIT]) for row in rows]
 
-    def notes(self, msg: Incoming, kind: str, profiles: list[Profile], memories: list[Memory],
-              can_speak: bool = False, scene: str | None = None, repeating: list[str] | None = None,
-              now: float | None = None, news: list[str] | None = None) -> list[str]:
-        now = time.time() if now is None else now
+    def _part_of_day(self, now: float) -> tuple[str, datetime]:
         local = datetime.fromtimestamp(now, self._tz)
         hour = local.hour
         if 5 <= hour < 12:
-            part = "morning"
-        elif 12 <= hour < 17:
-            part = "afternoon"
-        elif 17 <= hour < 22:
-            part = "evening"
-        else:
-            part = "night"
-        notes = [f"{local:%A} {part}, {local:%I:%M %p}.".replace(", 0", ", ")]
-        for profile in profiles:
-            is_owner = profile.user_id == msg.owner_id
-            line = f"{profile.name}: {relationship(profile.chats, is_owner, profile.affection, profile.chosen)}."
-            if profile.facts:
-                line += " " + "; ".join(profile.facts[-3:]) + "."
-            felt = [f for f in profile.feelings if f.feeling != "neutral"][-3:]
-            if felt:
-                line += " You " + "; ".join(f"{f.feeling} {f.about} ({ago(now - f.at)})" for f in reversed(felt)) + "."
-            notes.append(line)
-        for memory in memories:
-            notes.append(f"You remember ({ago(now - memory.created_at)}): {memory.content}")
+            return "morning", local
+        if 12 <= hour < 17:
+            return "afternoon", local
+        if 17 <= hour < 22:
+            return "evening", local
+        return "night", local
+
+    def person_note(self, profile: Profile, owner_id: int, now: float) -> str:
+        line = f"{profile.name}: {relationship(profile.chats, profile.user_id == owner_id, profile.affection, profile.chosen)}."
+        if profile.facts:
+            line += " " + "; ".join(profile.facts[-3:]) + "."
+        felt = [f for f in profile.feelings if f.feeling != "neutral"][-3:]
+        if felt:
+            line += " You " + "; ".join(f"{f.feeling} {f.about} ({ago(now - f.at)})" for f in reversed(felt)) + "."
+        return line
+
+    @staticmethod
+    def memory_note(memory: Memory, now: float) -> str:
+        return f"You remember ({ago(now - memory.created_at)}): {memory.content}"
+
+    def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
+                      repeating: list[str] | None = None, news: list[str] | None = None,
+                      now: float | None = None) -> list[str]:
+        """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
+        None of it depends on the next message, so it can be read ahead of time."""
+        now = time.time() if now is None else now
+        part, local = self._part_of_day(now)
+        notes = [f"It's {local:%A} {part}."]
+        notes += [self.person_note(profile, owner_id, now) for profile in profiles]
+        notes += [self.memory_note(memory, now) for memory in memories]
         notes += news or []
         if scene:
             notes.append(f"Where things stood after your last message: {scene}")
         if repeating:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
+        return notes
+
+    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False) -> str:
+        """Which message to answer, and how."""
         latest = msg.content if len(msg.content) <= 160 else msg.content[:160] + "..."
         feeling = f'Your "feeling" is about {msg.author_name}.'
         said = "replied to your message" if msg.replies_to_me and not msg.mentions_me else "just said or did"
         if msg.owner_id and msg.author_id == msg.owner_id:
             said = f"(your human) {said}"
         if kind == "direct" and can_speak:
-            notes.append(f'{msg.author_name} {said}: "{latest}". Answer them as {self.name}, carrying on '
-                         f"from what's been happening. {feeling}")
-        elif kind == "direct":
-            notes.append(f'{msg.author_name} {said}: "{latest}". React as a cat would, with no words, carrying on '
-                         f"from what's been happening. {feeling}")
-        elif kind == "home":  # Whiskers' own channel: it answers everything, meant for it or not
-            notes.append(f'{msg.author_name} {said}: "{latest}". It may not be meant for you. React as a cat '
-                         f"would{', in your own way' if can_speak else ', with no words'}, carrying on from what's been "
-                         f"happening. {feeling}")
-        else:
-            notes.append(f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
-                         f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
-        return notes
+            return (f'{msg.author_name} {said}: "{latest}". Answer them as {self.name}, carrying on from what\'s been '
+                    f"happening. {feeling}")
+        if kind == "direct":
+            return (f'{msg.author_name} {said}: "{latest}". React as a cat would, with no words, carrying on from '
+                    f"what's been happening. {feeling}")
+        if kind == "home":  # Whiskers' own channel: it answers everything, meant for it or not
+            return (f'{msg.author_name} {said}: "{latest}". It may not be meant for you. React as a cat '
+                    f"would{', in your own way' if can_speak else ', with no words'}, carrying on from what's been "
+                    f"happening. {feeling}")
+        return (f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
+                f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
 
     def last_feeling(self, channel_id: int) -> tuple[str, str, float, str | None] | None:
         """(feeling, about, affection now, "chosen"/"dropped"/None) from the last reply here, for simulations."""
@@ -499,7 +534,8 @@ class Brain:
         owner_id = self._owners.get(guild_id, 0)
         chosen = [p.name for p in await self.db.chosen_people(guild_id) if p.user_id != owner_id]
         return reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak,
-                                   await self._owner_name(guild_id), self.pronouns, chosen, self.scene_first)
+                                   await self._owner_name(guild_id), self.pronouns, chosen, self.scene_first,
+                                   as_json=not self.lines)
 
     @property
     def _system_in_first_turn(self) -> bool:
@@ -517,31 +553,28 @@ class Brain:
         if not journal.can_speak:
             rows = self.as_cat(rows)
         self._read_upto[msg.channel_id] = max([r.message_id for r in rows if not r.is_self] + [msg.message_id])
-        people = [msg.author_id]
-        for row in reversed(rows[-10:]):
-            if not row.is_self and row.author_id not in people:
-                people.append(row.author_id)
-        profiles = [p for uid in people[:3] if (p := await self.db.profile(msg.guild_id, uid))]
-
-        words = keywords(" ".join([msg.content] + [r.content for r in rows[-4:] if not r.is_self]))
-        memories: list[Memory] = []
-        for memory in await self.db.memories_about(msg.guild_id, msg.author_id, 2) + \
-                await self.db.search_memories(msg.guild_id, words, 3):
-            if all(m.id != memory.id for m in memories):
-                memories.append(memory)
-
         system = await self.system_prompt(msg.guild_id, journal)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
-        scene, scene_at = self._scenes.get(msg.channel_id, ("", 0.0))
-        if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
-            scene = ""
         recent_own = [r.content for r in rows if r.is_self][-6:]
-        # Only Whiskers' own habits count as repeating, not the people and things the scene is about.
-        props = keywords(" ".join([msg.content] + [r.content for r in rows[-12:] if not r.is_self]), limit=40)
-        repeating = repeated_actions(recent_own, ignore={self.name, *names, *props})
-        news = [n for p in profiles if (n := self._news.pop((msg.guild_id, p.user_id), None))]
-        notes = self.notes(msg, kind, profiles, memories[:2], journal.can_speak, scene, repeating, news=news)
-        slot = self.llm.slot_for(msg.channel_id if self.slot_key is None else self.slot_key)
+        now = time.time()
+        prepared = self._prepared.pop(msg.channel_id, None)
+        if prepared and self._still_fits(prepared, rows, system, now):
+            # The notes were read ahead of time; only the newest messages and what they bring are new.
+            newest = rows[len(prepared.rows):]
+            after = []
+            for user_id in dict.fromkeys(r.author_id for r in newest):
+                if user_id not in prepared.people and (profile := await self.db.profile(msg.guild_id, user_id)):
+                    after.append(self.person_note(profile, msg.owner_id, now))
+            words = keywords(" ".join(r.content for r in newest))
+            after += [self.memory_note(m, now) for m in await self.db.search_memories(msg.guild_id, words, 1)
+                      if m.id not in prepared.memories]
+            notes = prepared.notes
+        else:
+            words = keywords(" ".join([msg.content] + [r.content for r in rows[-4:] if not r.is_self]))
+            notes, _, _ = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id, msg.owner_id, words)
+            after = []
+        after.append(self.reply_note(msg, kind, journal.can_speak))
+        slot = self._slot(msg.channel_id)
 
         def finish(raw: str) -> str:
             text = as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],
@@ -555,18 +588,19 @@ class Brain:
 
         def watch(text: str) -> None:
             streamed[0] = text
-            if ready and not reply_written.is_set() and REPLY_FINISHED.search(text):
+            if ready and not reply_written.is_set() and written_reply(text) is not None:
                 reply_written.set()
 
         async def generate() -> ChatResult:
             history = rows
             while True:
                 messages = reply_messages(system, history, notes, self.name,
-                                          system_in_first_turn=self._system_in_first_turn)
+                                          system_in_first_turn=self._system_in_first_turn, after=after)
                 try:
                     return await self.llm.chat(
                         messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
-                        json_schema=self.reply_schema, extra=ANTI_REPEAT, on_text=watch, slot=slot,
+                        json_schema=self.reply_schema, grammar=self.reply_grammar, extra=ANTI_REPEAT, on_text=watch,
+                        slot=slot,
                     )
                 except LLMError as error:
                     if "context" not in str(error).lower() or len(history) <= 4:
@@ -584,7 +618,7 @@ class Brain:
                 finally:
                     waiting.cancel()
                 if reply_written.is_set() and not chat.done():
-                    text = finish(parse_reply(streamed[0])[1])
+                    text = finish(written_reply(streamed[0]) or "")
                     await ready(text)
             try:
                 result = await chat
@@ -600,8 +634,9 @@ class Brain:
         self.llm.remember_prefix(slot, system)
         log.debug("Reply in %s: read %d prompt tokens (%d cached), wrote %d tokens in %.1fs", msg.channel_id,
                   result.prompt_tokens, result.cached_tokens, result.tokens, result.seconds)
-        scene, reply = parse_reply(result.text)
-        if len(scene) >= self.reply_schema["properties"]["scene"]["maxLength"] - 2:
+        parts = read_reply(result.text)
+        scene, reply = parts.scene, parts.reply
+        if len(scene) >= SCENE_LIMIT[self.scene_first] - 2:
             scene = re.split(r"[;,.](?=[^;,.]*$)", scene)[0].rstrip(" ;,.") or scene  # cut off mid-word: end it cleanly
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
@@ -614,10 +649,73 @@ class Brain:
         self._felt.pop(msg.channel_id, None)
         if kind in ("direct", "home"):  # chiming in on other people's chat says little about how they treat Whiskers
             try:
-                await self.feel(msg, *parse_feeling(result.text))
+                await self.feel(msg, parts.feeling, parts.about)
             except Exception:  # the message is already posted; don't lose it over a bookkeeping error
                 log.exception("Couldn't record how %s made Whiskers feel", msg.author_name)
         return text
+
+    def _slot(self, channel_id: int) -> int | None:
+        return self.llm.slot_for(channel_id if self.slot_key is None else self.slot_key)
+
+    async def _context(self, guild_id: int, channel_id: int, rows: list[StoredMessage], author_id: int,
+                       owner_id: int, words: list[str]) -> tuple[list[str], set[int], set[int]]:
+        """The context notes for a reply in this chat, and which people and memories they cover."""
+        people = [author_id]
+        for row in reversed(rows[-10:]):
+            if not row.is_self and row.author_id not in people:
+                people.append(row.author_id)
+        profiles = [p for uid in people[:3] if (p := await self.db.profile(guild_id, uid))]
+        memories: list[Memory] = []
+        for memory in await self.db.memories_about(guild_id, author_id, 2) + \
+                await self.db.search_memories(guild_id, words, 3):
+            if all(m.id != memory.id for m in memories):
+                memories.append(memory)
+        memories = memories[:2]
+        scene, scene_at = self._scenes.get(channel_id, ("", 0.0))
+        if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
+            scene = ""
+        names = {r.author_name for r in rows if not r.is_self}
+        # Only Whiskers' own habits count as repeating, not the people and things the scene is about.
+        props = keywords(" ".join(r.content for r in rows[-12:] if not r.is_self), limit=40)
+        repeating = repeated_actions([r.content for r in rows if r.is_self][-6:], ignore={self.name, *names, *props})
+        news = [n for p in profiles if (n := self._news.pop((guild_id, p.user_id), None))]
+        notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news)
+        return notes, {p.user_id for p in profiles}, {m.id for m in memories}
+
+    def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:
+        """True if a reply can start exactly like the prompt that was read ahead of time."""
+        count = len(prepared.rows)
+        return (prepared.system == system and [r.id for r in rows[:count]] == prepared.rows
+                and len(rows) > count and not any(r.is_self for r in rows[count:])
+                and prepared.part_of_day == self._part_of_day(now)[0])
+
+    async def prepare_next(self, msg: Incoming) -> None:
+        """Read the start of this channel's next reply into the model's cache while people are still typing.
+
+        Everything but the newest messages is known as soon as Whiskers has replied: the chat so far and the
+        notes on who's around, what it remembers and where the scene stands. On a CPU, reading those notes
+        takes several seconds; doing it now leaves only the newest messages to read when one arrives.
+        """
+        if self.cfg.llm_backend != "managed":
+            return
+        journal = await self.db.journal(msg.guild_id)
+        rows = self.window(msg.channel_id, await self.db.recent_messages(msg.channel_id, self.cfg.history_messages))
+        if not rows or not rows[-1].is_self:
+            return  # someone has already said something new; that reply reads it all anyway
+        if not journal.can_speak:
+            rows = self.as_cat(rows)
+        system = await self.system_prompt(msg.guild_id, journal)
+        words = keywords(" ".join(r.content for r in rows[-5:] if not r.is_self))
+        notes, people, memories = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id,
+                                                      msg.owner_id, words)
+        slot = self._slot(msg.channel_id)
+        result = await self.llm.chat(prefill_messages(system, rows, notes, self.name, self._system_in_first_turn),
+                                     max_tokens=1, temperature=0.0, slot=slot)
+        self.llm.remember_prefix(slot, system)
+        self._prepared[msg.channel_id] = Prepared(notes, people, memories, [r.id for r in rows], system,
+                                                  self._part_of_day(time.time())[0])
+        log.debug("Got the next reply in %s ready (read %d prompt tokens in %.1fs).", msg.channel_id,
+                  result.prompt_tokens, result.seconds)
 
     async def feel(self, msg: Incoming, feeling: str, about: str) -> str | None:
         """Remember how what someone just did made Whiskers feel, and let it add up.

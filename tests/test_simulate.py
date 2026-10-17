@@ -16,6 +16,8 @@ class FakeLLM(ScriptedLLM):
         self.calls = 0
 
     async def answer(self, messages, kwargs):
+        if kwargs.get("max_tokens") == 1:
+            return ""  # reading the next reply's start ahead of time
         self.calls += 1
         return json.dumps({"scene": f"scene {self.calls}", "reply": "*pounces on Angel's feet*", "feeling": "loved",
                            "about": "chin scratches"})
@@ -112,7 +114,7 @@ def test_a_stuck_reply_stops_the_simulation_with_a_clear_message(cfg, tmp_path, 
 
     class StuckAfterTwo(FakeLLM):
         async def answer(self, messages, kwargs):
-            if self.calls >= 2:
+            if self.calls >= 2 and kwargs.get("max_tokens") != 1:
                 await asyncio.sleep(60)
             return await super().answer(messages, kwargs)
 

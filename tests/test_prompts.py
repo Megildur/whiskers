@@ -24,11 +24,19 @@ def test_turns_always_end_with_a_user_turn():
     assert turns[-1]["role"] == "user"
 
 
-def test_notes_go_last_so_the_prompt_prefix_stays_cacheable():
-    messages = reply_messages("SYSTEM", [msg(1, "Alice", "hi")], ["It's night."], "Whiskers")
-    assert messages[0] == {"role": "system", "content": "SYSTEM"}
-    assert messages[-1]["content"].startswith("Alice: hi\n\n(Whiskers's private notes")
-    assert messages[-1]["content"].endswith("- It's night.")
+def test_notes_come_before_the_newest_messages_so_they_can_be_read_ahead():
+    from whiskers.prompts import prefill_messages
+
+    rows = [msg(1, "Alice", "hi"), msg(2, "Whiskers", "*purrs*", is_self=True)]
+    ahead = prefill_messages("SYSTEM", rows, ["It's night."], "Whiskers")
+    assert [m["role"] for m in ahead] == ["system", "user", "assistant", "user"]
+    assert ahead[-1]["content"] == "(Whiskers's private notes, not part of the chat)\n- It's night."
+
+    later = reply_messages("SYSTEM", rows + [msg(3, "Bob", "*pets you*")], ["It's night."], "Whiskers",
+                           after=['Bob just said or did: "*pets you*".'])
+    assert later[:-1] == ahead[:-1]  # everything before the last turn is the same...
+    assert later[-1]["content"].startswith(ahead[-1]["content"] + "\n\nBob: *pets you*")  # ...and so is its start
+    assert later[-1]["content"].endswith('notes on the newest messages)\n- Bob just said or did: "*pets you*".')
 
 
 def test_parse_journal_keeps_bullets_only():
@@ -68,7 +76,7 @@ def test_mistral_models_get_the_personality_at_the_start_of_the_chat():
     messages = reply_messages("SYSTEM", rows, ["note"], "Whiskers", system_in_first_turn=True)
     assert [m["role"] for m in messages] == ["user", "assistant", "user"]
     assert messages[0]["content"].startswith("SYSTEM\n\n---\n\nAlice: hi")
-    assert messages[-1]["content"].startswith("Alice: *pets you*")
+    assert messages[-1]["content"].endswith("- note\n\nAlice: *pets you*")
 
 
 def test_system_prompt_names_whiskers_human():

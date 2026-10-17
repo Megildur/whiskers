@@ -104,6 +104,7 @@ class LLMClient:
         temperature: float,
         stop: list[str] | None = None,
         json_schema: dict | None = None,
+        grammar: str | None = None,
         should_stop: Callable[[str], bool] | None = None,
         on_text: Callable[[str], None] | None = None,
         extra: dict | None = None,
@@ -111,7 +112,8 @@ class LLMClient:
     ) -> ChatResult:
         """Stream a chat completion. Cancelling the task closes the connection, which stops generation.
 
-        `on_text` sees the text so far as it streams in. `slot` pins the request to a llama-server slot."""
+        `on_text` sees the text so far as it streams in. `slot` pins the request to a llama-server slot, and
+        `grammar` (GBNF, llama-server only) holds the output to a shape, like `json_schema` does for JSON."""
         if not self.engine.ready:
             raise LLMError("the AI engine isn't ready yet")
         managed = self.cfg.llm_backend == "managed"
@@ -134,6 +136,8 @@ class LLMClient:
             body.update(min_p=0.05, repeat_penalty=1.08, cache_prompt=True, **(extra or {}))
             if slot is not None:
                 body["id_slot"] = slot
+            if grammar:
+                body["grammar"] = grammar
         else:
             body["stream_options"] = {"include_usage": True}
         headers = {"Authorization": f"Bearer {self.cfg.llm_api_key}"} if self.cfg.llm_api_key else {}

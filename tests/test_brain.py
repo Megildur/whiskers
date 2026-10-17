@@ -194,28 +194,26 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
     from whiskers.db import Memory, Profile
 
     brain = make_brain(cfg)
-    notes = brain.notes(
-        incoming("whiskers"), "direct",
-        [Profile(1, "Alice", ["works night shifts"], chats=30)],
-        [Memory(1, "Alice gave Whiskers a laser pointer.", 0.0)],
-        now=3 * 86400.0,
+    notes = brain.context_notes(
+        0, [Profile(1, "Alice", ["works night shifts"], chats=30)],
+        [Memory(1, "Alice gave Whiskers a laser pointer.", 0.0)], now=3 * 86400.0,
     )
-    assert notes[0] == "Sunday night, 12:00 AM."
+    assert notes[0] == "It's Sunday night."
     assert "Alice: a good friend you trust. works night shifts." in notes
     assert notes[2] == "You remember (3 days ago): Alice gave Whiskers a laser pointer."
-    assert notes[-1].startswith('user1 just said or did: "whiskers". React as a cat would, with no words')
-    talking = brain.notes(incoming("whiskers"), "direct", [], [], can_speak=True)
-    assert talking[-1].startswith('user1 just said or did: "whiskers". Answer them as Whiskers')
-    replied = brain.notes(incoming("LMAO 💀", replies_to_me=True), "direct", [], [])
-    assert replied[-1].startswith('user1 replied to your message: "LMAO 💀". React as a cat would')
+    assert brain.reply_note(incoming("whiskers"), "direct").startswith(
+        'user1 just said or did: "whiskers". React as a cat would, with no words')
+    assert brain.reply_note(incoming("whiskers"), "direct", can_speak=True).startswith(
+        'user1 just said or did: "whiskers". Answer them as Whiskers')
+    assert brain.reply_note(incoming("LMAO 💀", replies_to_me=True), "direct").startswith(
+        'user1 replied to your message: "LMAO 💀". React as a cat would')
 
 
 def test_whiskers_adores_its_human_and_warms_up_to_others(cfg):
     from whiskers.db import Profile
 
     brain = make_brain(cfg)
-    msg = incoming("*pets the kitty*", author=1, owner_id=1)
-    notes = brain.notes(msg, "direct", [Profile(1, "Brandon", chats=0), Profile(2, "Angel", chats=0)], [])
+    notes = brain.context_notes(1, [Profile(1, "Brandon", chats=0), Profile(2, "Angel", chats=0)], [])
     assert "Brandon: your human, the person you love most in the world." in notes
     assert any(n.startswith("Angel: new to you") and "friendly" in n for n in notes)
 
@@ -233,13 +231,12 @@ def test_how_whiskers_treats_people_follows_how_they_treated_it(cfg):
     brain = make_brain(cfg)
     rough = Profile(2, "Tearyu", chats=3, affection=-20,
                     feelings=[Feeling("a treat", "liked", 0.0), Feeling("tail pulling", "hated", 86400.0 - 600)])
-    notes = brain.notes(incoming("hi kitty", author=2), "direct", [rough], [], now=86400.0,
-                        news=["Tearyu did something"])
+    notes = brain.context_notes(0, [rough], [], news=["Tearyu did something"], now=86400.0)
     line = next(n for n in notes if n.startswith("Tearyu:"))
     assert "you don't trust them" in line
     assert line.endswith("You hated tail pulling (10 minutes ago); liked a treat (1 day ago).")
     assert "Tearyu did something" in notes
-    assert notes[-1].endswith('Your "feeling" is about user2.')
+    assert brain.reply_note(incoming("hi kitty", author=2), "direct").endswith('Your "feeling" is about user2.')
 
 
 def test_people_whiskers_likes_get_more_chime_ins(cfg):
@@ -346,7 +343,7 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
         last_turn = brain.llm.calls[-1][0][-1]["content"]
         assert "Where things stood after your last message: Brandon gave me catnip and I'm going wild" in last_turn
         assert "You've been repeating yourself (" in last_turn and "purrs" in last_turn
-        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply", "feeling", "about"]
+        assert brain.llm.calls[-1][1]["grammar"].startswith('root ::= note "\\n" message "\\nfeeling: "')
         await brain.db.close()
 
     asyncio.run(go())
@@ -432,5 +429,5 @@ def test_reactions_fit_the_mood_of_the_message(cfg):
 
 def test_whiskers_knows_when_his_human_is_talking(cfg):
     brain = make_brain(cfg)
-    notes = brain.notes(incoming("*shakes the treat bag*", author=1, owner_id=1), "direct", [], [])
-    assert notes[-1].startswith('user1 (your human) just said or did: "*shakes the treat bag*"')
+    note = brain.reply_note(incoming("*shakes the treat bag*", author=1, owner_id=1), "direct")
+    assert note.startswith('user1 (your human) just said or did: "*shakes the treat bag*"')

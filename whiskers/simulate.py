@@ -18,7 +18,8 @@ A step is (who, line) or (who, line, how).
   (not meant for Whiskers, but it answers anyway, as in its home channels; any "chat" lines just before
   are answered in the same reply, as when several messages arrive while it's busy).
 
-Times are how long until the reply would be posted. Emoji reactions show up as "(reacts with ...)".
+Times are how long until the reply would be posted, with the start of each reply read ahead of time as
+it is in real chat while people type (Brain.prepare_next). Emoji reactions show up as "(reacts with ...)".
 
 The everyday Discord packs live in discord_scenes.py.
 """
@@ -567,6 +568,8 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 seconds = (posted[0] if posted else time.monotonic()) - started
                 seconds_total += seconds
                 await brain.record_own_message(msg, next(ids), reply, time.time())
+                async with bot.scheduler.background_turn():  # as in real chat while people type; not timed
+                    await asyncio.wait_for(brain.prepare_next(msg), timeout=REPLY_TIMEOUT)
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
                 found = checks(reply, raw, replies, ignore=props)
                 replies.append(reply)

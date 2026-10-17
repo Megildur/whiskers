@@ -78,7 +78,7 @@ def test_the_reply_is_posted_before_the_model_finishes_its_notes(cfg, tmp_path):
         job = brain.submit("direct", msg)
         assert await brain.respond(job, typing, deliver) == "*purrs*"
         assert events == ["typing", "stopped typing", ("posted", "*purrs*", 0)]  # posted while still writing
-        assert llm.finished == 1
+        assert llm.finished == 2 and llm.calls[1][1]["max_tokens"] == 1  # then the next reply was got ready
         assert brain.last_feeling(10)[:2] == ("liked", "pets")  # the notes still counted
         assert (await brain.db.recent_messages(10, 5))[-1].content == "*purrs*"
         assert llm.calls[0][1]["slot"] == 0
@@ -188,9 +188,78 @@ def test_scene_note_after_the_message_posts_even_sooner(cfg, tmp_path):
         assert await brain.compose(msg, "direct", ready=ready) == "*purrs*"
         assert posted == [("*purrs*", 0)]  # posted before the note and feeling were written
         assert brain.last_scene(10) == "Brandon pets him; he purrs" and brain.last_feeling(10)[0] == "liked"
-        schema = llm.calls[0][1]["json_schema"]
-        assert list(schema["properties"])[0] == "reply"
-        assert '"reply": your message to the chat.\n- "scene": a private note for next time' in llm.calls[0][0][0]["content"]
+        assert llm.calls[0][1]["grammar"].startswith('root ::= message "\\n" note')
+        assert "Line 1: your message to the chat, on one line.\nLine 2: in brackets, a private note for next time" \
+            in llm.calls[0][0][0]["content"]
         await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_the_next_reply_starts_exactly_like_what_was_read_ahead(cfg, tmp_path):
+    async def go():
+        llm = Model()
+        brain = brain_for(cfg, tmp_path, llm)
+        await brain.db.connect()
+
+        async def say(msg):
+            await brain.observe(msg, GuildSettings(reactions=False), 0)
+            text = await brain.compose(msg, "direct")
+            await brain.record_own_message(msg, msg.message_id + 1, text, 1000.0)
+            return llm.calls[-1][0]
+
+        first = message("*pets*", 1000, mentions_me=True)
+        await say(first)
+        await brain.prepare_next(first)
+        ahead = llm.calls[-1][0]
+        assert llm.calls[-1][1]["max_tokens"] == 1
+
+        later = await say(message("*gives a treat*", 1010, mentions_me=True))
+        assert later[:-1] == ahead[:-1]
+        fresh = later[-1]["content"].removeprefix(ahead[-1]["content"])
+        assert fresh != later[-1]["content"]  # the reply starts with everything read ahead...
+        assert fresh.startswith("\n\nBrandon: *gives a treat*") and fresh.count("\n- ") == 1  # ...plus one note
+
+        await brain.prepare_next(message("*gives a treat*", 1010))
+        ahead = llm.calls[-1][0]
+        newcomer = Incoming(1020, 1, 10, 9, "Milo", "*waves*", 1000.0, mentions_me=True, owner_id=8)
+        later = await say(newcomer)
+        fresh = later[-1]["content"].removeprefix(ahead[-1]["content"])
+        assert fresh.startswith("\n\nMilo: *waves*") and "- Milo: new to you" in fresh
+
+        await brain.prepare_next(newcomer)
+        await brain.db.set_journal(1, "- I'm Whiskers.\n- I love naps.", "test")  # the system prompt changed
+        later = await say(message("*pets*", 1030, mentions_me=True))
+        assert "I love naps" in later[0]["content"] and "It's " in later[-1]["content"]  # written fresh
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_replies_come_as_four_short_lines_from_llama_cpp_and_json_from_other_servers(cfg, tmp_path):
+    class Lines(Model):
+        async def answer(self, messages, kwargs):
+            self.calls.append((messages, kwargs))
+            return "(Brandon pets him; he melts)\n*melts into the hand*\nfeeling: liked\nabout: pets"
+
+    async def go():
+        llm = Lines()
+        brain = brain_for(cfg, tmp_path, llm)
+        await brain.db.connect()
+        msg = message(mentions_me=True)
+        await brain.observe(msg, GuildSettings(), 0)
+        posted = []
+
+        async def ready(text):
+            posted.append((text, llm.finished))
+
+        assert await brain.compose(msg, "direct", ready=ready) == "*melts into the hand*"
+        assert posted == [("*melts into the hand*", 0)]
+        assert brain.last_scene(10) == "Brandon pets him; he melts" and brain.last_feeling(10)[:2] == ("liked", "pets")
+        assert llm.calls[0][1]["json_schema"] is None and "Answer in exactly four lines" in llm.calls[0][0][0]["content"]
+        await brain.db.close()
+
+        external = brain_for(dataclasses.replace(cfg, llm_backend="external"), tmp_path, Model())
+        assert external.reply_grammar is None and external.reply_schema["required"][1] == "reply"
 
     asyncio.run(go())
