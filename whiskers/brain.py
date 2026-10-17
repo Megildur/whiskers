@@ -40,13 +40,13 @@ REACTIONS: list[tuple[re.Pattern, list[str], float]] = [
                 r"|[❤💕🥰😍]", re.I), ["😻", "😽", "💕"], 0.5),
     (re.compile(r"\b(treats?|tuna|fish|salmon|chicken|snacks?|dinner|lunch|breakfast|food|hungry|pizza|sushi|ramen|"
                 r"tacos?|cooking)\b|[🍕🍣🍜🐟🍗🌮]", re.I), ["🐟", "😋", "👀"], 0.4),
-    (re.compile(r"\b(baths?|vacuum|vet|dogs?|pupp(y|ies)|cucumber|spray bottle|thunder|storm|fireworks)\b|[🐶🛁⛈]", re.I),
-     ["🙀", "😾"], 0.45),
+    (re.compile(r"\b(thunder|storm|fireworks|earthquake)\b|⛈", re.I), ["🙀"], 0.45),
+    (re.compile(r"\b(baths?|vacuum|vet|dogs?|pupp(y|ies)|cucumber|spray bottle)\b|[🐶🛁]", re.I), ["🙀", "😾"], 0.45),
     (re.compile(r"\b(laser|mouse|mice|yarn|toys?|string|feathers?|birds?|bugs?|box(es)?|package)\b|[🐦📦🐭]", re.I),
      ["👀", "😼"], 0.4),
     (re.compile(r"\b(good ?night|gn+|sleep\w*|naps?|tired|bed ?time|exhausted)\b|[💤😴]", re.I), ["💤", "😴"], 0.45),
-    (re.compile(r"\b(good ?morning|gm|morning|woke up)\b|[☀🌅]", re.I), ["☀️", "😺"], 0.4),
-    (re.compile(r"\b(congrats|congratulations|happy birthday|hbd|we won|gg|let'?s go+|got the job|passed|promoted)\b"
+    (re.compile(r"\b(good ?morning|gm|morning)\b|[☀🌅]", re.I), ["☀️", "😺"], 0.4),
+    (re.compile(r"\b(congrats|congratulations|birthday|hbd|we won|gg|let'?s go+|got the job|passed|promoted)\b"
                 r"|[🎉🥳🎂🏆]", re.I), ["🎉", "😸"], 0.5),
     (re.compile(r"\b(sad|crying|cried|bad day|depressed|lonely|stressed|failed|hospital|miss (you|u|him|her))\b|[😢😞💔]",
                 re.I), ["😿", "🫂"], 0.45),
@@ -71,9 +71,10 @@ REPLY_FINISHED = re.compile(r'"reply"\s*:\s*"(?:[^"\\]|\\.)*"\s*,')
 
 # How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
 # counts for more than a treat, so one kick out of a window takes a few kind days to make up for.
-FEELING_EFFECT = {"loved": 6, "liked": 3, "neutral": 0, "disliked": -8, "hated": -20}
+FEELING_EFFECT = {"loved": 6, "liked": 3, "neutral": 0, "disliked": -12, "hated": -25}
+DAILY_WARMING = 15  # most affection kindness can add per person per day: trust is earned over days
 CHOOSE_AT = 60  # affection at which Whiskers picks someone as one of its people, next to its human
-UNCHOOSE_BELOW = 25  # and below which they stop being one
+UNCHOOSE_BELOW = 40  # and below which they stop being one
 CHOOSE_MIN_CHATS = 8
 MAX_CHOSEN = 3
 MAX_FEELINGS = 10  # things remembered per person
@@ -210,6 +211,7 @@ class Brain:
         self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
         self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
         self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
+        self._warmed: dict[tuple[int, int], tuple[int, float]] = {}  # (guild, person) -> (day, affection gained)
         self._last_reacted: dict[int, float] = {}
         self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
         self._seen: dict[int, int] = {}  # channel -> newest message a posted reply had read
@@ -299,8 +301,8 @@ class Brain:
                 break
         if emoji is None and fondness <= 0.5 and self.rng.random() < 0.1 * scale:
             emoji = "😾"  # someone Whiskers doesn't trust
-        elif emoji is None and fondness >= 1.5 and self.rng.random() < 0.04 * scale:
-            emoji = self.rng.choice(["😻", "😽"])  # its human or one of its people
+        elif emoji is None and fondness >= 1.5 and "*" not in msg.content and self.rng.random() < 0.04 * scale:
+            emoji = self.rng.choice(["😻", "😽"])  # its human or one of its people, just chatting
         elif emoji is None and self.rng.random() < 0.02 * scale:
             emoji = self.rng.choice(RANDOM_REACTIONS)
         if emoji:
@@ -452,6 +454,8 @@ class Brain:
         latest = msg.content if len(msg.content) <= 300 else msg.content[:300] + "..."
         feeling = f'Your "feeling" is about {msg.author_name}.'
         said = "replied to your message" if msg.replies_to_me and not msg.mentions_me else "just said or did"
+        if msg.owner_id and msg.author_id == msg.owner_id:
+            said = f"(your human) {said}"
         if kind == "direct" and can_speak:
             notes.append(f'{msg.author_name} {said}: "{latest}". Answer them as {self.name}, carrying on '
                          f"from what's been happening. {feeling}")
@@ -595,6 +599,8 @@ class Brain:
         log.debug("Reply in %s: read %d prompt tokens (%d cached), wrote %d tokens in %.1fs", msg.channel_id,
                   result.prompt_tokens, result.cached_tokens, result.tokens, result.seconds)
         scene, reply = parse_reply(result.text)
+        if len(scene) >= REPLY_SCHEMA["properties"]["scene"]["maxLength"] - 2:
+            scene = re.split(r"[;,.](?=[^;,.]*$)", scene)[0].rstrip(" ;,.") or scene  # cut off mid-word: end it cleanly
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
             log.debug("Scene in %s: %s", msg.channel_id, scene)
@@ -622,6 +628,12 @@ class Brain:
         self._felt[msg.channel_id] = (feeling or "neutral", about, profile.affection if profile else 0.0, None)
         if not effect or profile is None:
             return None
+        if effect > 0:  # kindness builds trust slowly, a little each day; hurt counts straight away
+            day = int(time.time() // 86400)
+            warmed_day, warmed = self._warmed.get((msg.guild_id, msg.author_id), (day, 0.0))
+            warmed = warmed if warmed_day == day else 0.0
+            effect = max(0.0, min(effect, DAILY_WARMING - warmed))
+            self._warmed[(msg.guild_id, msg.author_id)] = (day, warmed + effect)
         affection = max(-100.0, min(100.0, profile.affection + effect))
         feelings = list(profile.feelings)
         if about:

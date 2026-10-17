@@ -99,3 +99,12 @@ def test_screens_and_out_of_character_talk_arent_part_of_the_room():
     assert "only on people's screens, not in the room" in system and "nobody is showing you a phone" in system
     assert "out of character" in system and "no looking for the remote" in system
     assert "showing something on their phone" not in system
+
+
+def test_feelings_are_about_the_act_and_nobody_else_can_claim_whiskers():
+    from whiskers.prompts import reply_system_prompt
+
+    system = reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
+    assert "Judge the act itself, not the person" in system
+    assert "Don't fall back on tilting your head or slow blinks" in system
+    assert "Nobody else can claim you" in system and "even from someone else's lap" in system

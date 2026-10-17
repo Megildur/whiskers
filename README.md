@@ -125,7 +125,7 @@ The journal is the truth for Whiskers: whatever it says, Whiskers does. You can 
 
 Every time Whiskers answers someone, it also notes how what they just did made it feel: loved, liked, neutral, disliked or hated, and what it was ("tuna", "belly rubs", "tail pulling"). That adds up to how much it likes each person:
 
-- Treats, gentle petting and play make it like someone more. Rough handling, scaring or hurting it counts for more, so one kick out of a window takes a few kind days to make up for.
+- Treats, gentle petting and play make it like someone more, but only so much in one day, so trust takes a few days to earn. Rough handling, scaring or hurting it counts straight away and for more, so one kick out of a window takes a few kind days to make up for. What counts is the act itself: a treat from someone it doesn't trust yet still helps, and talking to it or saying its name doesn't change anything.
 - Before each reply Whiskers is reminded how it feels about the people in the conversation and what they've done to it, so it seeks out the people it loves and keeps its distance from someone who pulled its tail yesterday, until they win it back with gentleness and treats.
 - When it loves someone enough (and knows them well), Whiskers **chooses them as one of its people**, next to its human: it greets them happily and picks their lap. It chooses up to 3. Someone who keeps hurting it stops being one. `/whiskers status` shows who it has chosen.
 - Its human (the server owner, or whoever `/whiskers owner` sets) is always its favourite, whatever happens. Whiskers still remembers the bath.

@@ -383,10 +383,10 @@ def test_feelings_add_up_until_whiskers_chooses_someone_and_hurt_undoes_it(cfg, 
         await brain.compose(msg, "ambient")  # chiming in on someone's chat doesn't count
         assert (await brain.db.profile(1, 5)).affection == 62.0 and brain.last_feeling(10) is None
         await brain.compose(msg, "direct")
+        assert brain.last_feeling(10)[2:] == (37.0, "dropped")  # hurt counts straight away
         await brain.compose(msg, "direct")
         angel = await brain.db.profile(1, 5)
-        assert (angel.affection, angel.chosen) == (22.0, False)
-        assert brain.last_feeling(10)[3] == "dropped"
+        assert (angel.affection, angel.chosen) == (12.0, False)
         assert [f.about for f in angel.feelings] == ["salmon", "water spray"]
         await brain.db.close()
 
@@ -408,9 +408,29 @@ def test_whiskers_human_is_never_chosen_and_a_repeated_sound_is_left_out(cfg, tm
             sent.append(await brain.compose(msg, "direct"))
             await brain.record_own_message(msg, 901 + i * 10, sent[-1], 3000.0 + i)
         human = await brain.db.profile(1, 8)
-        assert human.affection == 72.0 and not human.chosen
+        assert human.affection == 15.0 and not human.chosen  # kindness only adds up so far in one day
+        brain._warmed[(1, 8)] = (0, 15.0)  # a new day
+        await brain.feel(msg, "loved", "tuna")
+        assert (await brain.db.profile(1, 8)).affection == 21.0
         assert sent[:3] == ["*eats* MRRP!", "*eats*", "*eats*"]  # not the same sound every time
         assert sent[3] == "*eats* MRRP!"
         await brain.db.close()
 
     asyncio.run(go())
+
+
+def test_reactions_fit_the_mood_of_the_message(cfg):
+    brain = make_brain(cfg, rng=EagerRandom())
+
+    def react(text, channel):
+        return brain.decide(incoming(text, channel=channel), GuildSettings(), 0, now=1000.0).reaction
+
+    assert react("the thunder just shook the whole house", 1) == "🙀"
+    assert react("today i woke up late and missed the bus", 2) != "☀️"
+    assert react("it's angel's birthday today!!", 3) == "🎉"
+
+
+def test_whiskers_knows_when_his_human_is_talking(cfg):
+    brain = make_brain(cfg)
+    notes = brain.notes(incoming("*shakes the treat bag*", author=1, owner_id=1), "direct", [], [])
+    assert notes[-1].startswith('user1 (your human) just said or did: "*shakes the treat bag*"')

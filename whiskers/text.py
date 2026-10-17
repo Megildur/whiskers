@@ -13,15 +13,17 @@ VIDEO_FILE = re.compile(r"\.(mp4|mov|webm)$", re.I)
 WORD = re.compile(r"[a-z0-9']{3,}")
 SPEAKER_LABEL = re.compile(r"^\**\s*([^\s:*][^:\n*]{0,40}?)\s*(?:\*\*)?\s*:\s*(?:\*\*)?\s*")
 
-# Sounds a cat can make, stretched any amount: meeeow, mreow, mrrrp, prrt, purrrr, hsss, mlem...
+# Sounds a cat can make, stretched any amount and run together: meeeow, mreow, mrrrp, prrt, hsss, mrrpmrrp...
 CAT_SOUND = re.compile(
     r"^(?:m+r*e+o+w+|m+r*e+w+|m+i*a+o+w*|m+r+(?:r|p|a+p|o+w+)+|m+e{2,}p+|p+u*r{2,}[prt]*|p+r+[pt]+|h+i*s{2,}|"
     r"c+h+i*r+u*p+|t+r+i*l+|n+y+a+n*|y+e*o+w+l*|r+a+w+r+|b+r{2,}[pt]*|g+r{2,}|r{2,}[pt]*|m{2,}|m+l+e+m+|"
-    r"b+l+e+p+|n+o+m+)$",
+    r"b+l+e+p+|n+o+m+)+$",
     re.I,
 )
 ACTION_OR_PLAIN = re.compile(r"(\*[^*\n]+\*|(?<!\w)_[^_\n]+_(?!\w))")
-SPEECH_IN_ACTION = re.compile(r"[\"“”:]|\b(says?|said|whispers?|speaks?|talks?|thinks?|thoughts?|telepath\w*)\b", re.I)
+SPEECH_IN_ACTION = re.compile(
+    r"[\"“”:]|\b(says?|said|whispers?|speaks?|talks?|telepath\w*)\b|\b(thinks?|thoughts?)\s+(that|you|i|he|she|they)\b", re.I,
+)
 # Plain text right after an action that carries the action on: "*launches up*, lands running and hides"
 NARRATION = re.compile(r"^(?:[,;]|(?:and|then|before|while|until|as)\b)", re.I)
 NOT_NARRATION = re.compile(r"[\"“”?]|\b(i|i'm|me|my|you|you're|your|we|hi|hello|hey)\b", re.I)
@@ -181,6 +183,10 @@ def cat_only(text: str) -> str:
     text = re.sub(r"\*{2,}", "", text)  # bold markers; single asterisks are actions
     text = re.sub(r"[{}]", " ", text)  # stray JSON braces
     text = re.sub(r"(?<=\w) \* (?=\w)", ", ", text)  # *yowls * crash-lands* : asterisks used as commas
+    if text.count("*") % 2:  # "*MRRP! *dashes over*": a sound took the action's opening asterisk
+        text = re.sub(r"\*\s*([^*\s][^*]*?)\s+\*(?=\S)",
+                      lambda m: m.group(1) + " *" if all(is_cat_sound(t) for t in m.group(1).split()) else m.group(0),
+                      text, count=1)
     if text.count("*") % 2 and re.search(r"\*\s*\w[^*]*$", text):
         text += "*"  # an action that was never closed
     kept: list[str] = []

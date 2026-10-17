@@ -440,7 +440,7 @@ def removed_words(raw: str, reply: str) -> list[str]:
     """Words the model wrote that didn't make it into the message, ignoring sounds left out on purpose."""
     kept = set(re.findall(r"[a-z']+", reply.lower()))
     gone: list[str] = []
-    for word in re.findall(r"[a-z']+", raw.lower()):
+    for word in re.findall(r"[a-z][a-z']*", raw.lower()):
         if word not in kept and word not in gone and word not in ("my", "myself") and not is_cat_sound(word):
             gone.append(word)
     return gone
@@ -451,7 +451,7 @@ def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozense
 
     `ignore` holds the names and things in the scene, which aren't Whiskers repeating itself."""
     found = []
-    if reply in FALLBACK_ACTIONS:
+    if reply in FALLBACK_ACTIONS and reply not in raw:
         found.append("stock action: nothing usable came back from the model")
     if FIRST_PERSON.search(reply):
         found.append("I/my inside an action")
@@ -464,7 +464,7 @@ def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozense
     repeats = repeated_actions(earlier[-2:] + [reply], ignore=ignore)
     if repeats:
         found.append("repeats: " + ", ".join(repeats))
-    gone = removed_words(raw, reply) if raw and reply not in FALLBACK_ACTIONS else []
+    gone = removed_words(raw, reply) if raw and (reply not in FALLBACK_ACTIONS or reply in raw) else []
     if gone:
         found.append("words were removed: " + ", ".join(gone[:6]) + (" ..." if len(gone) > 6 else ""))
     return found
@@ -554,13 +554,13 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 if how == "chat":
                     lines += [f"{user_name}: {text}"] + ([reacted] if reacted else [])
                     continue
-                started = time.monotonic()
                 posted: list[float] = []
 
                 async def ready(_text: str) -> None:
                     posted.append(time.monotonic())
 
                 async with bot.scheduler.background_turn():  # real chat goes first
+                    started = time.monotonic()  # time spent waiting for real chat doesn't count
                     reply = await asyncio.wait_for(
                         brain.compose(msg, "home" if how == "chime" else "direct", ready=ready), timeout=REPLY_TIMEOUT,
                     )

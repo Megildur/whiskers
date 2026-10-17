@@ -139,3 +139,12 @@ def test_links_reach_whiskers_as_what_people_see():
     assert readable("https://x.com/cats/status/1") == "[shares a tweet]"
     assert readable("see https://example.com/page?x=1.") == "see [shares a link: example.com]"
     assert readable("movie night <t:1700000000:R>") == "movie night [a time]"
+
+
+def test_run_together_sounds_and_a_sound_holding_an_actions_asterisk():
+    from whiskers.text import cat_only
+
+    assert cat_only("*yowls and wriggles* MRRPMRRPMRRP!") == "*yowls and wriggles* MRRPMRRPMRRP!"
+    assert cat_only("*MRRP! *dashes to Brandon, tail straight up*") == "MRRP! *dashes to Brandon, tail straight up*"
+    assert cat_only("*MEOW! *sits down to think about it* MRRP") == "MEOW! *sits down to think about it* MRRP"
+    assert cat_only("*thinks that you are weird* *naps*") == "*naps*"

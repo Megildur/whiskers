@@ -140,3 +140,23 @@ def test_a_prompt_that_doesnt_fit_is_retried_with_less_history(cfg, tmp_path):
         await brain.db.close()
 
     asyncio.run(go())
+
+
+def test_a_scene_note_cut_off_at_its_limit_ends_cleanly(cfg, tmp_path):
+    class LongScene(Model):
+        async def answer(self, messages, kwargs):
+            scene = ("Whiskers was having fun with the dare, but Milo's stern tone gives him pause. He loves a good "
+                     "game but he knows when to stop")[:120]
+            assert len(scene) == 120
+            return json.dumps({"scene": scene, "reply": "*freezes*", "feeling": "neutral", "about": ""})
+
+    async def go():
+        brain = brain_for(cfg, tmp_path, LongScene())
+        await brain.db.connect()
+        msg = message(mentions_me=True)
+        await brain.observe(msg, GuildSettings(), 0)
+        await brain.compose(msg, "direct")
+        assert brain.last_scene(10) == "Whiskers was having fun with the dare, but Milo's stern tone gives him pause"
+        await brain.db.close()
+
+    asyncio.run(go())

@@ -180,6 +180,8 @@ def test_choosing_scenes():
 
 def test_checks_flag_common_problems():
     assert checks("*flicks tail*", "", []) == ["stock action: nothing usable came back from the model"]
+    assert checks("*tilts head*", "*tilts head*", []) == []  # the model really wrote it
+    assert checks("*purrs*", "*purrs*'", []) == []  # a stray quote isn't a word
     assert checks("*flops onto my back*", "*flops onto my back*", []) == ["I/my inside an action"]
     assert checks("*purrs*", "*purrs* hello friend", []) == ["words were removed: hello, friend"]
     assert checks("*purrs*", "*purrs*, MRRP!*", []) == []  # punctuation and a left-out sound aren't words
