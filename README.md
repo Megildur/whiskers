@@ -154,9 +154,9 @@ On a CPU, a reply costs two things: reading the conversation (the prompt) and wr
 
 - **Each busy channel keeps its own cache.** llama.cpp remembers what it has already read, so a reply only reads the new messages. Every channel Whiskers talks in gets its own slot (as many as `LLM_CONTEXT` allows), and background chores like writing memories use a separate one, so answering in another channel or writing memories never makes it re-read a conversation.
 - **It gets ready while nobody's talking.** Its personality, journal and rules are the longest part of every prompt. Whiskers reads them into each slot ahead of time: after a restart, after its journal changes and after it chooses a new favourite person.
-- **The message is posted as soon as it's written.** The model writes a short private scene note, then the message, then how the person made Whiskers feel. The message goes out right away while it finishes the rest.
+- **The message is posted as soon as it's written.** The model writes a private scene note, then the message, then how the person made Whiskers feel. The message goes out right away while it finishes the rest.
 - **The next reply is half-read before anyone writes it.** Most of what Whiskers reads before a reply doesn't depend on the next message: the chat so far, who's around and how it feels about them, what it remembers and where the scene stands. Right after it replies, while people are typing, it reads all of that into its cache. When the next message arrives, only that message is new (about 70 tokens instead of about 260).
-- **Little is written before the message.** On a CPU, writing is the slowest part (with `nemo-12b`, about 4 tokens, or 3 words, a second), so the private scene note written before the message is at most 10 words. `SCENE_NOTE=after` in `.env` moves the note behind the message: a few seconds faster, but Whiskers may follow roleplay a little less well. `MODEL=nemo-12b-fast` is the same model in a smaller file, about 10% faster.
+- **Thinking before acting is worth its time.** On a CPU, writing is the slowest part (with `nemo-12b`, about 4 tokens, or 3 words, a second). The private scene note before the message is Whiskers' moment of thought: what just happened, how it feels and what it does about it. It costs a few seconds, but it's where Whiskers' personality and its grip on the roleplay come from: when it was cut to 10 words, replies came out short, passive and almost silent. `SCENE_NOTE=after` in `.env` moves the note behind the message: several seconds faster, but blander. `MODEL=nemo-12b-fast` is the same model in a smaller file, about 10% faster.
 - **Emoji reactions need no AI at all**, and in roaming channels a reaction often replaces a chime-in.
 
 ## Settings in .env
@@ -173,7 +173,7 @@ The commented `.env.example` lists them all. The ones you might change:
   After changing it, restart. The new model downloads once; you can delete the old `.gguf` from `models/` to free space.
 - `LLM_THREADS`: CPU threads for the model. Leave it empty; Whiskers reads your plan's CPU limit.
 - `LLM_CONTEXT`: memory for conversations. Each channel Whiskers keeps ready gets 6144 tokens, plus one share for background chores: `18432` keeps two channels ready (16 GB server with `nemo-12b`), `12288` keeps one, and `8192` suits small servers. Lower it if the server runs out of memory.
-- `SCENE_NOTE`: `before` (default) or `after`. `after` makes replies a few seconds faster; see [How replies stay fast](#how-replies-stay-fast).
+- `SCENE_NOTE`: `before` (default) or `after`. `after` makes replies several seconds faster but blander; see [How replies stay fast](#how-replies-stay-fast).
 - `TIMEZONE`: so Whiskers knows when it's night (for example `America/New_York`).
 - `CAT_GENDER`: `boy` (default) or `girl`, for the pronouns the story uses.
 - `OWNER_IDS`: your Discord user ID, to use the admin commands in any server.

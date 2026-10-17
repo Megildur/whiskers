@@ -9,6 +9,7 @@ from whiskers.brain import Brain, Incoming
 from whiskers.db import Database, GuildSettings
 from whiskers.engine import slot_layout
 from whiskers.llm import CHORES, LLMError
+from whiskers.prompts import SCENE_LIMIT
 from whiskers.scheduler import Scheduler
 
 
@@ -146,8 +147,8 @@ def test_a_scene_note_cut_off_at_its_limit_ends_cleanly(cfg, tmp_path):
     class LongScene(Model):
         async def answer(self, messages, kwargs):
             scene = ("Whiskers was having fun with the dare, but Milo's stern tone gives him pause. He loves a good "
-                     "game but he knows when to stop")[:120]
-            assert len(scene) == 120
+                     "game but he knows when to stop, so he sits down and wraps his tail around his paws")[:SCENE_LIMIT]
+            assert len(scene) == SCENE_LIMIT
             return json.dumps({"scene": scene, "reply": "*freezes*", "feeling": "neutral", "about": ""})
 
     async def go():
@@ -156,7 +157,8 @@ def test_a_scene_note_cut_off_at_its_limit_ends_cleanly(cfg, tmp_path):
         msg = message(mentions_me=True)
         await brain.observe(msg, GuildSettings(), 0)
         await brain.compose(msg, "direct")
-        assert brain.last_scene(10) == "Whiskers was having fun with the dare, but Milo's stern tone gives him pause"
+        assert brain.last_scene(10) == ("Whiskers was having fun with the dare, but Milo's stern tone gives him "
+                                        "pause. He loves a good game but he knows when to stop")
         await brain.db.close()
 
     asyncio.run(go())
@@ -166,7 +168,6 @@ def test_scene_note_after_the_message_posts_even_sooner(cfg, tmp_path):
     from whiskers.prompts import reply_schema
 
     assert list(reply_schema(False)["properties"]) == ["reply", "scene", "feeling", "about"]
-    assert reply_schema(True)["properties"]["scene"]["maxLength"] < reply_schema(False)["properties"]["scene"]["maxLength"]
 
     class ReplyFirst(Model):
         async def answer(self, messages, kwargs):

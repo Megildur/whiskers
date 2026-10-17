@@ -21,6 +21,8 @@ CAT_SOUND = re.compile(
     r"b+l+e+p+|n+o+m+)+$",
     re.I,
 )
+# Words for the sounds a cat makes, inside actions: *purrs*, *starts purring*, *lands with a yowl*.
+SOUND_WORD = re.compile(r"\b(?:purr|me+o+w|mew|hiss|chirp|chirrup|trill|yowl|growl|mrr|mreow)\w*", re.I)
 ACTION_OR_PLAIN = re.compile(r"(\*[^*\n]+\*|(?<!\w)_[^_\n]+_(?!\w))")
 SPEECH_IN_ACTION = re.compile(
     r"[\"“”:]|\b(says?|said|whispers?|speaks?|talks?|telepath\w*)\b|\b(thinks?|thoughts?)\s+(that|you|i|he|she|they)\b", re.I,
@@ -223,32 +225,9 @@ def cat_only(text: str) -> str:
     return result
 
 
-def _sound_key(token: str) -> str:
-    return re.sub(r"(.)\1+", r"\1", re.sub(r"[^a-z]", "", token.lower()))  # "MRRRP!" -> "mrp"
-
-
-def _sounds(text: str) -> set[str]:
-    return {_sound_key(token) for part in ACTION_OR_PLAIN.split(text) if not part.strip().startswith(("*", "_"))
-            for token in part.split() if is_cat_sound(token)}
-
-
-def drop_repeated_sounds(text: str, recent: list[str]) -> str:
-    """Leave out a cat sound Whiskers made in either of its last two messages, so it doesn't end every
-    reply with "MRRP!". Only when an action is left to carry the reply."""
-    used = set().union(*(_sounds(message) for message in recent[-2:])) if recent else set()
-    if not used:
-        return text
-    kept = []
-    for part in ACTION_OR_PLAIN.split(text):
-        part = part.strip()
-        if part.startswith(("*", "_")):
-            kept.append(part)
-        elif part:
-            tokens = [t for t in part.split() if not (is_cat_sound(t) and _sound_key(t) in used)]
-            if tokens:
-                kept.append(" ".join(tokens))
-    result = " ".join(kept)
-    return result if "*" in result else text
+def makes_sound(text: str) -> bool:
+    """True if a message has a cat sound in it, said ("MRRP!") or done (*purrs*, *hisses at the vacuum*)."""
+    return bool(SOUND_WORD.search(text)) or any(is_cat_sound(token) for token in text.split())
 
 
 def as_stage_directions(text: str, his: str = "its", himself: str = "itself") -> str:
@@ -350,21 +329,23 @@ def _stem(word: str) -> str:
     return word
 
 
-def repeated_actions(messages: list[str], ignore: set[str] = frozenset(), limit: int = 4) -> list[str]:
-    """Words Whiskers keeps using across its recent messages, like "purrs" and "nuzzles"."""
+def repeated_actions(messages: list[str], ignore: set[str] = frozenset(), limit: int = 4, times: int = 2) -> list[str]:
+    """Words Whiskers keeps using, in at least `times` of its recent messages, like "nuzzles" and "tilts".
+
+    Sounds don't count: a happy cat purrs again, and that's fine."""
     counts: dict[str, int] = {}
     shown: dict[str, str] = {}
     ignored = {w.lower() for w in ignore}
     for message in messages:
         seen = set()
         for word in re.findall(r"[a-z]{3,}", message.lower()):
-            if word in ACTION_FILLER or word in ignored or is_cat_sound(word):
-                continue  # sounds are spaced out in code (drop_repeated_sounds)
+            if word in ACTION_FILLER or word in ignored or is_cat_sound(word) or SOUND_WORD.match(word):
+                continue
             stem = _stem(word)
             if stem in seen:
                 continue
             seen.add(stem)
             counts[stem] = counts.get(stem, 0) + 1
             shown.setdefault(stem, word)
-    repeated = sorted((stem for stem, n in counts.items() if n >= 2), key=lambda s: -counts[s])
+    repeated = sorted((stem for stem, n in counts.items() if n >= times), key=lambda s: -counts[s])
     return [shown[stem] for stem in repeated[:limit]]

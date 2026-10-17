@@ -202,7 +202,7 @@ def test_notes_describe_people_memories_and_what_to_do(cfg):
     assert "Alice: a good friend you trust. works night shifts." in notes
     assert notes[2] == "You remember (3 days ago): Alice gave Whiskers a laser pointer."
     assert brain.reply_note(incoming("whiskers"), "direct").startswith(
-        'user1 just said or did: "whiskers". React as a cat would, with no words')
+        'user1 just said or did: "whiskers". React as a cat would, with actions and cat sounds but no human words')
     assert brain.reply_note(incoming("whiskers"), "direct", can_speak=True).startswith(
         'user1 just said or did: "whiskers". Answer them as Whiskers')
     assert brain.reply_note(incoming("LMAO 💀", replies_to_me=True), "direct").startswith(
@@ -325,6 +325,28 @@ def test_learning_to_talk_needs_time_and_reflections(cfg, tmp_path):
     asyncio.run(go())
 
 
+def test_a_cat_that_has_been_silent_is_reminded_it_has_a_voice(cfg, tmp_path):
+    import asyncio
+    import dataclasses
+    import json
+
+    async def go():
+        longer = dataclasses.replace(cfg, history_messages=20)
+        brain = brain_with(longer, tmp_path, json.dumps({"scene": "Brandon is around", "reply": "*watches Brandon*"}))
+        await brain.db.connect()
+        for i in range(5):
+            msg = incoming(f"*does thing {i}*", author=8, message_id=700 + i * 10, mentions_me=True, owner_id=8)
+            await brain.observe(msg, GuildSettings(), 0)
+            sent = await brain.compose(msg, "direct")
+            await brain.record_own_message(msg, 701 + i * 10, sent, 2000.0 + i)
+            if i == 3:
+                assert "You haven't made a sound" not in brain.llm.calls[-1][0][-1]["content"]
+        assert "You haven't made a sound in a while" in brain.llm.calls[-1][0][-1]["content"]
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
 def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
     import asyncio
     import json
@@ -334,7 +356,7 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
                             "reply": "*rolls in the catnip, purrs and nuzzles the bag*"})
         brain = brain_with(cfg, tmp_path, reply)
         await brain.db.connect()
-        for i, text in enumerate(["*gives catnip*", "good kitty", "*pets*"]):
+        for i, text in enumerate(["*gives catnip*", "good kitty", "*pets*", "*scratches your chin*"]):
             msg = incoming(text, author=8, message_id=700 + i * 10, mentions_me=True, owner_id=8)
             await brain.observe(msg, GuildSettings(), 0)
             sent = await brain.compose(msg, "direct")
@@ -342,7 +364,9 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
             await brain.record_own_message(msg, 701 + i * 10, sent, 2000.0 + i)
         last_turn = brain.llm.calls[-1][0][-1]["content"]
         assert "Where things stood after your last message: Brandon gave me catnip and I'm going wild" in last_turn
-        assert "You've been repeating yourself (" in last_turn and "purrs" in last_turn
+        assert "You've been repeating yourself (" in last_turn and "nuzzles" in last_turn
+        assert "purrs" not in last_turn.split("repeating yourself")[1].split(")")[0]  # sounds may repeat
+        assert "You haven't made a sound" not in last_turn
         assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply", "feeling", "about"]
         await brain.db.close()
 
@@ -390,7 +414,7 @@ def test_feelings_add_up_until_whiskers_chooses_someone_and_hurt_undoes_it(cfg, 
     asyncio.run(go())
 
 
-def test_whiskers_human_is_never_chosen_and_a_repeated_sound_is_left_out(cfg, tmp_path):
+def test_whiskers_human_is_never_chosen_and_a_sound_can_repeat(cfg, tmp_path):
     import asyncio
     import json
 
@@ -409,8 +433,7 @@ def test_whiskers_human_is_never_chosen_and_a_repeated_sound_is_left_out(cfg, tm
         brain._warmed[(1, 8)] = (0, 15.0)  # a new day
         await brain.feel(msg, "loved", "tuna")
         assert (await brain.db.profile(1, 8)).affection == 21.0
-        assert sent[:3] == ["*eats* MRRP!", "*eats*", "*eats*"]  # not the same sound every time
-        assert sent[3] == "*eats* MRRP!"
+        assert sent[:3] == ["*eats* MRRP!"] * 3  # a happy cat may well say so every time
         await brain.db.close()
 
     asyncio.run(go())

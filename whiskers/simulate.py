@@ -462,7 +462,7 @@ def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozense
         found.append("touches a screen: " + SCREEN.search(reply).group(0).lower())
     if len(reply) > 350:
         found.append(f"long ({len(reply)} characters)")
-    repeats = repeated_actions(earlier[-2:] + [reply], ignore=ignore)
+    repeats = repeated_actions(earlier[-2:] + [reply], ignore=ignore, times=3)  # three messages in a row
     if repeats:
         found.append("repeats: " + ", ".join(repeats))
     gone = removed_words(raw, reply) if raw and (reply not in FALLBACK_ACTIONS or reply in raw) else []

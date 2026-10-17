@@ -44,8 +44,8 @@ CAT_RULES = ROLEPLAY_RULES + """
 - You are a cat and can't use human language at all: no words, no sentences, no inner thoughts. Questions, tests and requests to talk get a cat's reaction, nothing more.
 - When you don't understand something, do something real and specific: wander off, start grooming, sit on their things, flop over, ask for food. Don't fall back on tilting your head or slow blinks.
 - Write your reply as vivid *actions in asterisks* showing what {name} does, like stage directions about {him}, never with I, me or my: *chases {his} own tail*, not *I chase my tail*.
-- A cat sound (mrrp, meow, purr, hiss, yowl, chirp) is optional: use one only when it fits, not in every message.
-- One to three sentences of action. Never repeat what you did in your last few messages. No emoji.
+- Cats are chatty. Make a sound whenever the moment calls for one: a happy mrrp or chirp, a demanding MEOW, a purr, a HSSS or a YOWL. Making the same sound again is fine when you feel the same way.
+- One to three sentences of action. Don't copy your last few messages; find a fresh way to show how you feel. No emoji.
 
 Examples of good replies (each shows a different side of {name}; vary them, never copy them):
 Your human: *pets the kitty* -> *melts into the hand, then grabs it with both front paws so the petting can't stop*
@@ -66,17 +66,19 @@ Someone: [sends a gif: cat hissing] -> *ignores it completely and keeps washing 
 COMMUNICATING_RULES = ROLEPLAY_RULES + """
 - You've learned to get your thoughts across to people, in the way your journal describes. Use only that way.
 - You're still a cat: simple, short thoughts with cat logic, mixed with *actions in asterisks* and the occasional cat sound.
-- One to three sentences. Never repeat what you did in your last few messages. No lists or headings."""
+- One to three sentences. Don't copy your last few messages. No lists or headings."""
 
-# Replies come back as JSON: a short private note on the scene (writing it first, as a moment of thought,
-# makes the model follow the story better), the message, then how the person made Whiskers feel. The
-# message is posted as soon as it's written and the rest is finished afterwards. On a CPU every token written
-# before the message costs time, so the note is short, and SCENE_NOTE=after moves it behind the message.
+# Replies come back as JSON: a private note on the scene, the message, then how the person made Whiskers
+# feel. The note is Whiskers' moment of thought: what happened, how it feels and what it does about it. That
+# plan is where its personality and its grip on the story come from; cutting the note to a few words made
+# the replies short, passive and quiet (simulations 4 and 5), so it keeps room for a whole thought. The
+# message is posted as soon as it's written and the rest is finished afterwards. SCENE_NOTE=after moves the
+# note behind the message, which is faster but loses the thought.
 # The "reply" field keeps the message in the cat's own *action* style; a plain-text format without it made
 # the model narrate instead (see git history). The feeling builds up into how much Whiskers likes each person
 # (brain.Brain.feel).
 FEELINGS = ["loved", "liked", "neutral", "disliked", "hated"]
-SCENE_LIMIT = {True: 70, False: 110}  # characters, with the note before / after the message
+SCENE_LIMIT = 160  # characters
 
 FEELING_RULE = (
     "how what the person you're answering just did felt to {name}: \"loved\", \"liked\", \"neutral\", \"disliked\" "
@@ -90,8 +92,9 @@ ABOUT_RULE = ("unless the feeling is neutral, what they did as a short phrase wi
 
 
 def reply_format(scene_first: bool = True) -> str:
-    scene_before = ('- "scene": a private note about {name} in the third person ({he}/{him}), under 10 words: what '
-                    'just happened and how {he} feels, like "Brandon put down tuna; {name} is starving". Nobody sees this.')
+    scene_before = ('- "scene": a few private words about {name} in the third person ({he}/{him}): what just happened, '
+                    'how {name} feels about it and what {he} does, like "Brandon put down tuna; {name} is starving and '
+                    'dives in". Nobody sees this.')
     scene_after = ('- "scene": a private note for next time about {name} in the third person ({he}/{him}): what\'s '
                    'happening now and how {he} feels, like "Brandon put down tuna; {name} is eating". Nobody sees this.')
     reply = '- "reply": your message to the chat.'
@@ -101,7 +104,7 @@ def reply_format(scene_first: bool = True) -> str:
 
 
 def reply_schema(scene_first: bool = True) -> dict:
-    scene = {"type": "string", "maxLength": SCENE_LIMIT[scene_first]}
+    scene = {"type": "string", "maxLength": SCENE_LIMIT}
     reply = {"type": "string", "maxLength": 700}
     first = {"scene": scene, "reply": reply} if scene_first else {"reply": reply, "scene": scene}
     properties = {**first, "feeling": {"type": "string", "enum": FEELINGS}, "about": {"type": "string", "maxLength": 60}}

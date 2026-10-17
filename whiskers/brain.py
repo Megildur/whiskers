@@ -25,7 +25,7 @@ from .prompts import (
 )
 from .scheduler import Scheduler
 from .text import (
-    ago, as_stage_directions, cat_only, clean_reply, drop_repeated_sounds, keywords, narration_as_action, read_reply,
+    ago, as_stage_directions, cat_only, clean_reply, keywords, makes_sound, narration_as_action, read_reply,
     repeated_actions, written_reply,
 )
 
@@ -78,6 +78,7 @@ CHOOSE_MIN_CHATS = 8
 MAX_CHOSEN = 3
 MAX_FEELINGS = 10  # things remembered per person
 WARY_AT = -12
+QUIET_AFTER = 4  # messages in a row without a cat sound before Whiskers is reminded it has a voice
 
 
 @dataclass
@@ -470,7 +471,7 @@ class Brain:
 
     def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
                       repeating: list[str] | None = None, news: list[str] | None = None,
-                      now: float | None = None) -> list[str]:
+                      now: float | None = None, quiet: bool = False) -> list[str]:
         """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
         None of it depends on the next message, so it can be read ahead of time."""
         now = time.time() if now is None else now
@@ -483,6 +484,9 @@ class Brain:
             notes.append(f"Where things stood after your last message: {scene}")
         if repeating:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
+        if quiet:
+            notes.append("You haven't made a sound in a while. A mrrp, meow, purr or hiss would fit if the moment "
+                         "calls for one.")
         return notes
 
     def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False) -> str:
@@ -496,12 +500,12 @@ class Brain:
             return (f'{msg.author_name} {said}: "{latest}". Answer them as {self.name}, carrying on from what\'s been '
                     f"happening. {feeling}")
         if kind == "direct":
-            return (f'{msg.author_name} {said}: "{latest}". React as a cat would, with no words, carrying on from '
-                    f"what's been happening. {feeling}")
+            return (f'{msg.author_name} {said}: "{latest}". React as a cat would, with actions and cat sounds but no '
+                    f"human words, carrying on from what's been happening. {feeling}")
         if kind == "home":  # Whiskers' own channel: people talk to it without saying its name
-            return (f'{msg.author_name} {said}: "{latest}". React as a cat would'
-                    f"{', in your own way' if can_speak else ', with no words'}, carrying on from what's been "
-                    f"happening. If it's clearly meant for someone else, do your own cat thing nearby. {feeling}")
+            how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
+            return (f'{msg.author_name} {said}: "{latest}". React as a cat would, {how}, carrying on from what\'s '
+                    f"been happening. If it's clearly meant for someone else, do your own cat thing nearby. {feeling}")
         return (f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                 f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
 
@@ -551,7 +555,6 @@ class Brain:
         self._read_upto[msg.channel_id] = max([r.message_id for r in rows if not r.is_self] + [msg.message_id])
         system = await self.system_prompt(msg.guild_id, journal)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
-        recent_own = [r.content for r in rows if r.is_self][-6:]
         now = time.time()
         prepared = self._prepared.pop(msg.channel_id, None)
         if prepared and self._still_fits(prepared, rows, system, now):
@@ -577,7 +580,7 @@ class Brain:
                                        self.pronouns["himself"])
             if not journal.can_speak:
                 # A message narrated without asterisks ("Whiskers leans in and purrs.") is still an action.
-                text = drop_repeated_sounds(cat_only(text) or narration_as_action(text, self.name), recent_own)
+                text = cat_only(text) or narration_as_action(text, self.name)
             if not text:
                 log.warning("Nothing usable in the model's reply, so Whiskers falls back to a stock action: %r", raw)
             return text or self.rng.choice(FALLBACK_ACTIONS)
@@ -634,7 +637,7 @@ class Brain:
                   result.prompt_tokens, result.cached_tokens, result.tokens, result.seconds)
         parts = read_reply(result.text)
         scene, reply = parts.scene, parts.reply
-        if len(scene) >= SCENE_LIMIT[self.scene_first] - 2:
+        if len(scene) >= SCENE_LIMIT - 2:
             scene = re.split(r"[;,.](?=[^;,.]*$)", scene)[0].rstrip(" ;,.") or scene  # cut off mid-word: end it cleanly
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
@@ -675,9 +678,13 @@ class Brain:
         names = {r.author_name for r in rows if not r.is_self}
         # Only Whiskers' own habits count as repeating, not the people and things the scene is about.
         props = keywords(" ".join(r.content for r in rows[-12:] if not r.is_self), limit=40)
-        repeating = repeated_actions([r.content for r in rows if r.is_self][-6:], ignore={self.name, *names, *props})
+        own = [r.content for r in rows if r.is_self][-6:]
+        # A habit is the same thing in half of Whiskers' last six messages; doing something twice is fine.
+        repeating = repeated_actions(own, ignore={self.name, *names, *props}, times=3)
+        # Whiskers copies its own recent messages, so a run of silent ones would keep it silent for good.
+        quiet = len(own) >= QUIET_AFTER and not any(makes_sound(m) for m in own[-QUIET_AFTER:])
         news = [n for p in profiles if (n := self._news.pop((guild_id, p.user_id), None))]
-        notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news)
+        notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet)
         return notes, {p.user_id for p in profiles}, {m.id for m in memories}
 
     def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:

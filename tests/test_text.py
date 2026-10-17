@@ -72,7 +72,9 @@ def test_repeated_actions_finds_what_whiskers_keeps_doing():
 
     recent = ["*nuzzles against Brandon's hand, purrs softly* mrrp", "*purrs loudly, starts kneading*",
               "*nuzzles their hand, meowing softly*", "*flops over dramatically*"]
-    assert repeated_actions(recent, ignore={"Brandon"}) == ["nuzzles", "purrs"]
+    assert repeated_actions(recent, ignore={"Brandon"}) == ["nuzzles"]  # purring again is fine
+    assert repeated_actions(recent, ignore={"Brandon"}, times=3) == []
+    assert repeated_actions(recent + ["*nuzzles the couch*"], ignore={"Brandon"}, times=3) == ["nuzzles"]
     assert repeated_actions(["*zoomies*", "*naps*"]) == []
 
 
@@ -110,13 +112,14 @@ def test_cat_only_keeps_actions_the_model_wrote_sloppily():
     assert cat_only("*purrs* and you are my best friend") == "*purrs*"  # speech is still dropped
 
 
-def test_the_same_sound_twice_in_a_row_is_left_out():
-    from whiskers.text import drop_repeated_sounds
+def test_makes_sound_hears_sounds_said_and_done():
+    from whiskers.text import makes_sound
 
-    assert drop_repeated_sounds("*kneads* MRRP!", ["*naps* mrrrp", "*eats*"]) == "*kneads*"
-    assert drop_repeated_sounds("*kneads* MRRP!", ["*naps* mrrrp", "*eats*", "*sits*"]) == "*kneads* MRRP!"
-    assert drop_repeated_sounds("*kneads* meow", ["*naps* mrrp"]) == "*kneads* meow"
-    assert drop_repeated_sounds("MRRP!", ["mrrp"]) == "MRRP!"  # nothing would be left
+    for text in ["*kneads* MRRP!", "mrrp?", "*starts purring*", "*lands with a yowl*", "*hisses at the vacuum*",
+                 "*sprints to the kitchen* MEOW!", "*chirps at the birds*"]:
+        assert makes_sound(text), text
+    for text in ["*trots over*", "*flops down dramatically on his back*", "*tilts head, then swipes at the mirror*"]:
+        assert not makes_sound(text), text
 
 
 def test_parse_feeling_reads_how_whiskers_felt():

@@ -188,7 +188,9 @@ def test_checks_flag_common_problems():
     assert checks("*purrs*", "*purrs* hello friend", []) == ["words were removed: hello, friend"]
     assert checks("*purrs*", "*purrs*, MRRP!*", []) == []  # punctuation and a left-out sound aren't words
     assert checks("*flops onto his back*", "*flops onto my back*", []) == []
-    assert "repeats: purrs" in checks("*purrs loudly*", "", ["*purrs*", "*naps*"])
+    assert "repeats: pounces" in checks("*pounces on the couch*", "", ["*pounces on a leaf*", "*pounces on his tail*"])
+    assert checks("*pounces on the couch*", "*pounces on the couch*", ["*naps*", "*pounces on a leaf*"]) == []
+    assert checks("*purrs loudly*", "*purrs loudly*", ["*purrs*", "*purrs*"]) == []  # sounds may repeat
     assert checks("*pounces on the toy mouse*", "*pounces on the toy mouse*", ["*naps*"]) == []
     assert checks("*wags his tail*", "", []) == ["dog-like: wags"]
     assert checks("*sniffs the phone screen*", "", []) == ["touches a screen: phone"]
