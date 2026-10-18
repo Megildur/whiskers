@@ -289,8 +289,8 @@ def test_channels_that_lose_their_slot_are_saved_and_restored(tmp_path):
         llm.actions.clear()
         assert await llm.ready_slot(1, "SYS") == 1 and llm.actions == []  # still there: nothing to do
 
-        llm.engine.starts += 1  # a restarted server has nothing saved
-        assert await llm.ready_slot(2, "SYS") == 0 and llm.actions == []
+        llm.engine.starts += 1  # after a restart, what was saved to disk is still there
+        assert await llm.ready_slot(2, "SYS") == 0 and llm.actions == [(0, "restore", "chat-2.bin")]
 
     asyncio.run(go())
 
@@ -395,3 +395,50 @@ def test_a_simulation_keeps_its_prompt_after_reading_it_the_slow_way(cfg, tmp_pa
         await brain.db.close()
 
     asyncio.run(go())
+
+
+def test_open_channels_and_the_prompt_survive_a_restart(tmp_path):
+    async def go():
+        llm = SlotMover(tmp_path)
+        llm.engine.ready = True
+        await llm.ready_slot(1, "SYS")
+        llm.remember_prefix(0, "SYS")
+        await llm.ready_slot(2, "SYS")  # copies the prompt from channel 1's slot
+        await llm.save_open_conversations()  # shutting down
+        assert sorted(p.name for p in tmp_path.glob("*.bin")) == ["chat-1.bin", "chat-2.bin", "system-1.bin"]
+
+        restarted = SlotMover(tmp_path)  # a new process: only the folder is left
+        restarted.engine.starts += 1
+        assert restarted.has_system_copy("SYS")
+        assert await restarted.load_system(1, "SYS")  # warming up is a copy now, not a two-minute read
+        restarted.actions.clear()
+        assert await restarted.ready_slot(2, "SYS") == 0  # and a channel picks up where it left off
+        assert restarted.actions == [(0, "restore", "chat-2.bin")]
+
+        restarted.engine.starts += 1
+        (tmp_path / "chat-1.bin").write_text("kv")
+        assert await restarted.ready_slot(1, "NEW JOURNAL") == 0  # saved before the journal changed: useless
+        assert (0, "restore", "chat-1.bin") not in restarted.actions and not (tmp_path / "chat-1.bin").exists()
+
+    asyncio.run(go())
+
+
+def test_saved_slots_are_only_kept_for_the_same_model_and_settings(cfg, tmp_path):
+    import dataclasses
+
+    from whiskers.engine import ManagedEngine
+
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"gguf")
+
+    def launch_folder(config):
+        """What _launch does with data/slots before starting llama-server."""
+        engine = ManagedEngine.__new__(ManagedEngine)
+        engine.cfg, engine._help_text = config, "--slot-save-path"
+        return engine._prepare_slot_dir(model, 6144)
+
+    folder = launch_folder(cfg)
+    (folder / "system-1.bin").write_text("kv")
+    assert (launch_folder(cfg) / "system-1.bin").exists()  # a plain restart keeps it
+    other = dataclasses.replace(cfg, llm_flash_attn="off")
+    assert not (launch_folder(other) / "system-1.bin").exists()  # different settings: start over

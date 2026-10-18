@@ -19,6 +19,7 @@ log = logging.getLogger("whiskers.llm")
 THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
 CHORES = "chores"  # the conversation key for background chores
 SYSTEM_COPIES = 2  # saved prompts: Whiskers' own, and a simulation's (which keeps the journal it started with)
+MANIFEST = "saved.json"  # in the slot folder: which saved file holds what, so it survives a restart
 
 
 class LLMError(Exception):
@@ -54,12 +55,50 @@ class LLMClient:
     # ---- llama-server slots: one per conversation, so each keeps its own cache ----
 
     def _check_restart(self) -> None:
-        if self.engine.starts != self._starts:  # a fresh server has nothing cached (and no saved slots)
+        if self.engine.starts != self._starts:  # a fresh server has nothing cached, but its saved files are kept
             self._starts = self.engine.starts
             self._slots.clear()
             self._prefixes.clear()
-            self._saved.clear()
-            self._system_files.clear()
+            self._load_manifest()
+
+    def _load_manifest(self) -> None:
+        """What the slot folder holds, from before a restart (the engine keeps it only if it still fits)."""
+        self._saved.clear()
+        self._system_files.clear()
+        folder = getattr(self.engine, "slot_dir", None)
+        if folder is None:
+            return
+        try:
+            data = json.loads((folder / MANIFEST).read_text(encoding="utf-8"))
+            for system, filename in data.get("systems", []):
+                if (folder / filename).exists():
+                    self._system_files[system] = filename
+            for conversation, filename, system in data.get("channels", []):
+                if (folder / filename).exists():
+                    self._saved[conversation] = (filename, system)
+        except (OSError, ValueError, TypeError):
+            pass
+        kept = set(self._system_files.values()) | {filename for filename, _ in self._saved.values()}
+        for file in folder.glob("*.bin"):  # anything else is left over from an interrupted save
+            if file.name not in kept:
+                self._delete(file.name)
+        if self._system_files or self._saved:
+            log.info("Kept from before the restart: Whiskers' prompt%s and %d channel%s.",
+                     "s" if len(self._system_files) != 1 else "", len(self._saved), "s" if len(self._saved) != 1 else "")
+
+    def _write_manifest(self) -> None:
+        folder = getattr(self.engine, "slot_dir", None)
+        if folder is None:
+            return
+        data = {"systems": [[system, filename] for system, filename in self._system_files.items()],
+                "channels": [[conversation, filename, system]
+                             for conversation, (filename, system) in self._saved.items()]}
+        try:
+            temporary = folder / (MANIFEST + ".tmp")
+            temporary.write_text(json.dumps(data), encoding="utf-8")
+            temporary.replace(folder / MANIFEST)
+        except OSError as error:
+            log.warning("Couldn't note what's saved in %s: %s", folder, error)
 
     def conversation_slots(self) -> list[int]:
         return list(range(self.engine.chat_slots))
@@ -110,12 +149,15 @@ class LLMClient:
                 await self._save_conversation(evicted, slot)
             if new and conversation in self._saved:
                 filename, prefix = self._saved.pop(conversation)
-                result = await self._slot_action(slot, "restore", filename)
-                self._prefixes[slot] = prefix
+                self._write_manifest()
+                if prefix == system:  # saved before the journal changed: only the new prompt is any use
+                    result = await self._slot_action(slot, "restore", filename)
+                    self._prefixes[slot] = prefix
+                    self._delete(filename)
+                    log.info("Restored channel %s's conversation into slot %d (%s tokens in %.1fs).", conversation,
+                             slot, result.get("n_restored"), result.get("seconds", 0))
+                    return slot
                 self._delete(filename)
-                log.info("Restored channel %s's conversation into slot %d (%s tokens in %.1fs).", conversation,
-                         slot, result.get("n_restored"), result.get("seconds", 0))
-                return slot
             if self._prefixes.get(slot) != system:
                 await self.load_system(slot, system)
         except LLMError as error:
@@ -141,6 +183,7 @@ class LLMClient:
         return True
 
     def has_system_copy(self, system: str) -> bool:
+        self._check_restart()
         return system in self._system_files
 
     async def save_system(self, slot: int, system: str) -> None:
@@ -160,8 +203,9 @@ class LLMClient:
                                 if name not in used)
         await self._slot_action(slot, "save", filename)
         self._system_files[system] = filename
+        self._write_manifest()
 
-    async def _save_conversation(self, conversation: object, slot: int) -> None:
+    async def _save_conversation(self, conversation: object, slot: int, why: str = "to make room") -> None:
         keep = max(0, getattr(self.cfg, "llm_saved_channels", 0))
         if not keep:
             return
@@ -172,8 +216,20 @@ class LLMClient:
         while len(self._saved) > keep:  # forget the channel that's been away longest
             old = next(iter(self._saved))
             self._delete(self._saved.pop(old)[0])
-        log.info("Saved channel %s's conversation to make room in slot %d (%s tokens in %.1fs).", conversation,
-                 slot, result.get("n_saved"), result.get("seconds", 0))
+        self._write_manifest()
+        log.info("Saved channel %s's conversation from slot %d %s (%s tokens in %.1fs).", conversation, slot, why,
+                 result.get("n_saved"), result.get("seconds", 0))
+
+    async def save_open_conversations(self) -> None:
+        """Before shutting down: save the channels Whiskers has open, so after a restart each one comes back
+        in a second instead of being read again from scratch (a minute or more for a busy channel)."""
+        self._check_restart()
+        keep = max(0, getattr(self.cfg, "llm_saved_channels", 0))
+        if not self.can_save_slots or not keep or not getattr(self.engine, "ready", False):
+            return
+        open_ones = [(conversation, slot) for conversation, slot in self._slots.items() if self._prefixes.get(slot)]
+        for conversation, slot in open_ones[-keep:]:  # the most recently used last, so the cap keeps them
+            await self._save_conversation(conversation, slot, "before shutting down")
 
     def _delete(self, filename: str) -> None:
         try:

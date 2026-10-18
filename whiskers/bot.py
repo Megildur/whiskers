@@ -73,6 +73,11 @@ class WhiskersBot(commands.Bot):
     async def close(self) -> None:
         for task in self._background:
             task.cancel()
+        if not self.is_closed():
+            try:  # so after the restart each channel picks up where it left off instead of reading it all again
+                await asyncio.wait_for(self.llm.save_open_conversations(), timeout=20)
+            except Exception as error:
+                log.warning("Couldn't save the open conversations before shutting down: %s", error or "too slow")
         await self.engine.stop()
         await self.llm.close()
         await super().close()

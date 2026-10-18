@@ -262,15 +262,9 @@ class ManagedEngine(Engine):
         ]
         if self.cfg.llm_flash_attn in ("on", "off"):  # on a CPU, "on" reads prompts faster but writes slower
             optional.append(("--flash-attn", [self.cfg.llm_flash_attn]))
-        # Slots can be saved to disk and restored: a channel that loses its slot to another one comes back in
-        # a second or two instead of re-reading its whole conversation (see LLMClient.ready_slot).
-        slot_dir = self.cfg.data_dir / "slots"
-        shutil.rmtree(slot_dir, ignore_errors=True)  # saved for a different server start: possibly another model
-        self.slot_dir = None
-        if self.cfg.llm_saved_channels and "--slot-save-path" in self._help_text:
-            slot_dir.mkdir(parents=True, exist_ok=True)
-            optional.append(("--slot-save-path", [str(slot_dir)]))
-            self.slot_dir = slot_dir
+        self.slot_dir = self._prepare_slot_dir(model, per_slot)
+        if self.slot_dir:
+            optional.append(("--slot-save-path", [str(self.slot_dir)]))
         if self.cfg.preset and self.cfg.preset.thinking:
             optional += [("--chat-template-kwargs", ['{"enable_thinking":false}']), ("--reasoning-budget", ["0"])]
         for flag, values in optional:
@@ -308,6 +302,28 @@ class ManagedEngine(Engine):
         log.info("The AI engine is ready (model loaded in %.0fs). It keeps %d conversation%s ready with %d tokens "
                  "each%s.", time.monotonic() - started, chats, "s" if chats != 1 else "", per_slot,
                  ", plus one for background chores" if chore_slot else "")
+
+    def _prepare_slot_dir(self, model: Path, per_slot: int) -> Path | None:
+        """The folder llama-server saves slots in, if it can.
+
+        A channel that loses its slot to another one is saved there and comes back in a second or two instead
+        of re-reading its whole conversation (see LLMClient.ready_slot). What's in it is kept across restarts,
+        but only if the same model and llama.cpp saved it with the same settings: anything else can't be used.
+        """
+        slot_dir = self.cfg.data_dir / "slots"
+        made_by = (f"{model.name} {model.stat().st_size} | llama.cpp {self.cfg.llama_cpp_version} | {per_slot} "
+                   f"per slot | flash attention {self.cfg.llm_flash_attn}")
+        try:
+            same = (slot_dir / "made-by.txt").read_text(encoding="utf-8") == made_by
+        except OSError:
+            same = False
+        if not same:
+            shutil.rmtree(slot_dir, ignore_errors=True)
+        if not self.cfg.llm_saved_channels or "--slot-save-path" not in self._help_text:
+            return None
+        slot_dir.mkdir(parents=True, exist_ok=True)
+        (slot_dir / "made-by.txt").write_text(made_by, encoding="utf-8")
+        return slot_dir
 
     # ---- llama.cpp binary ----
 
