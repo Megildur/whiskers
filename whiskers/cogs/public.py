@@ -27,7 +27,7 @@ def next_update(journal: Journal, cfg: Config, now: float | None = None) -> str:
     minutes = (journal.reflected_at + cfg.reflect_min_hours * 3600 - now) / 60
     if minutes >= 1:
         return f"next update in about {minutes:.0f} min" if minutes < 90 else f"next update in about {minutes / 60:.0f} h"
-    return "next update at the next quiet moment"
+    return "next update at the next quiet moment, or within 15 minutes"
 
 
 @app_commands.guild_only()

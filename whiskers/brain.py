@@ -878,12 +878,13 @@ class Brain:
         cold = await self._cold_slot()
         if cold:
             return lambda: self._warm_up(*cold)
-        rows = await self.db.summary_batch()
-        if rows:
-            return lambda: self.summarize(rows)
+        # The journal goes before memories: a busy server always has some chat waiting to become memories.
         due = await self.db.reflection_due(self.cfg.reflect_every, self.cfg.reflect_min_hours * 3600)
         if due:
             return lambda: self.reflect(due[0])
+        rows = await self.db.summary_batch()
+        if rows:
+            return lambda: self.summarize(rows)
         return None
 
     async def _cold_slot(self) -> tuple[int, str] | None:

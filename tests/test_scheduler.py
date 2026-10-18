@@ -77,3 +77,28 @@ def test_real_replies_go_ahead_of_a_running_simulation():
         assert order == ["sim 0", "real", "sim 1", "sim 2"]  # waits for one simulation reply at most
 
     asyncio.run(go())
+
+
+def test_a_put_off_chore_can_take_its_turn_and_finish():
+    async def go():
+        scheduler = Scheduler()
+        order = []
+        started = asyncio.Event()
+
+        async def journal():
+            started.set()
+            order.append("journal starts")
+            await asyncio.sleep(0.05)
+            order.append("journal done")
+
+        async def reply():
+            await started.wait()
+            async with scheduler.reply_turn():
+                order.append("reply")
+
+        chore = asyncio.create_task(scheduler.run_chore(journal, take_turn=True))
+        await asyncio.gather(reply(), chore)
+        assert chore.result() is True
+        assert order == ["journal starts", "journal done", "reply"]  # not interrupted: the reply waited
+
+    asyncio.run(go())

@@ -23,6 +23,10 @@ from .scheduler import Scheduler
 log = logging.getLogger("whiskers")
 
 EXTENSIONS = ("whiskers.cogs.chat", "whiskers.cogs.admin", "whiskers.cogs.public")
+# Chores (writing memories, updating the journal) wait for a quiet moment, and anyone talking to Whiskers
+# interrupts them. A very active server may never have one, so after this long a chore takes its turn in the
+# reply queue instead, and replies wait a couple of minutes for it.
+CHORE_MAX_WAIT = 15 * 60
 CAT_ACTIVITIES = [
     "chasing a laser dot", "napping in a sunbeam", "knocking things off the table", "staring at the wall",
     "guarding the treat drawer", "batting at a string", "sitting in a box", "judging everyone",
@@ -104,17 +108,30 @@ class WhiskersBot(commands.Bot):
     async def _chores(self) -> None:
         """While nobody's talking to Whiskers, turn chat into memories and let it grow."""
         last_prune = 0.0
+        waiting_since: float | None = None  # when the chores due now first had to wait
         while True:
             await asyncio.sleep(20)
             try:
                 if time.monotonic() - last_prune > 6 * 3600:
                     await self.db.prune()
                     last_prune = time.monotonic()
-                if not self.engine.ready or self.scheduler.idle_for() < 30:
+                if not self.engine.ready:
                     continue
                 chore = await self.brain.next_chore()
-                if chore:
-                    await self.scheduler.run_chore(chore)
+                if chore is None:
+                    waiting_since = None
+                    continue
+                waiting_since = waiting_since or time.monotonic()
+                if time.monotonic() - waiting_since > CHORE_MAX_WAIT:
+                    log.info("Whiskers has been too busy for his background chores for %.0f minutes, so one takes "
+                             "its turn now.", (time.monotonic() - waiting_since) / 60)
+                    done = await self.scheduler.run_chore(chore, take_turn=True)
+                elif self.scheduler.idle_for() >= 30:
+                    done = await self.scheduler.run_chore(chore)
+                else:
+                    continue
+                if done:
+                    waiting_since = None
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -58,8 +58,15 @@ class Scheduler:
             self._lock.release()
             self.last_reply_at = time.monotonic()
 
-    async def run_chore(self, make_chore: Callable[[], Awaitable[object]]) -> bool:
-        """Run a background chore if nothing else is going on. False if skipped or interrupted."""
+    async def run_chore(self, make_chore: Callable[[], Awaitable[object]], take_turn: bool = False) -> bool:
+        """Run a background chore if nothing else is going on. False if skipped or interrupted.
+
+        With `take_turn`, the chore queues for its turn like a reply instead, and replies that come in meanwhile
+        wait for it: for a chore that a busy server has put off for too long."""
+        if take_turn:
+            async with self._lock:
+                await make_chore()
+            return True
         if self.busy:
             return False
         async with self._lock:
