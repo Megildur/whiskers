@@ -277,7 +277,7 @@ def test_channels_that_lose_their_slot_are_saved_and_restored(tmp_path):
         assert await llm.ready_slot(1, "SYS") == 0 and llm.actions == []  # nothing to copy yet: read it
         llm.remember_prefix(0, "SYS")
         assert await llm.ready_slot(2, "SYS") == 1  # a new channel gets the prompt copied, not re-read
-        assert llm.actions == [(0, "save", "system.bin"), (1, "restore", "system.bin")]
+        assert llm.actions == [(0, "save", "system-1.bin"), (1, "restore", "system-1.bin")]
         llm.actions.clear()
 
         assert await llm.ready_slot(3, "SYS") == 0  # channel 1 is pushed out: it's saved first
@@ -316,7 +316,7 @@ def test_warming_up_copies_the_prompt_when_another_slot_has_it(cfg, tmp_path):
         llm.slot_for(1)
         llm.remember_prefix(0, "SYS")
         await brain._warm_up(1, "SYS")
-        assert llm.actions == [(0, "save", "system.bin"), (1, "restore", "system.bin")]
+        assert llm.actions == [(0, "save", "system-1.bin"), (1, "restore", "system-1.bin")]
         assert llm.cached_prefix(1) == "SYS"
 
     asyncio.run(go())
@@ -340,7 +340,7 @@ def test_a_simulation_copies_the_prompt_into_the_chore_slot_instead_of_reading_i
         chores = llm.slot_for(CHORES)
 
         await brain.compose(msg, "direct")  # the first reply copies it in: a second instead of two minutes
-        assert llm.actions == [(0, "save", "system.bin"), (chores, "restore", "system.bin")]
+        assert llm.actions == [(0, "save", "system-1.bin"), (chores, "restore", "system-1.bin")]
         llm.actions.clear()
         await brain.compose(msg, "direct")
         assert llm.actions == []  # still there
@@ -348,7 +348,50 @@ def test_a_simulation_copies_the_prompt_into_the_chore_slot_instead_of_reading_i
         await brain.summarize(await brain.db.recent_messages(10, 20))  # a chore puts its own prompt in the slot
         assert llm.cached_prefix(chores) is None
         await brain.compose(msg, "direct")
-        assert llm.actions == [(chores, "restore", "system.bin")]
+        assert llm.actions == [(chores, "restore", "system-1.bin")]
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_a_simulation_keeps_its_prompt_copy_when_the_journal_changes(tmp_path):
+    async def go():
+        llm = SlotMover(tmp_path)
+        llm.slot_for(5)
+        llm.remember_prefix(0, "OLD")
+        chores = llm.slot_for(CHORES)
+        assert await llm.load_system(chores, "OLD")  # the simulation copies the prompt it started with
+        llm.remember_prefix(1, "NEW")  # then the journal changes, and real channels warm up with the new one
+        await llm.save_system(1, "NEW")
+        llm.forget_prefix(chores)  # a chore used the simulation's slot
+        llm.actions.clear()
+        assert await llm.load_system(chores, "OLD")  # still a copy away, not a minutes-long read
+        assert llm.actions == [(chores, "restore", "system-1.bin")]
+        await llm.save_system(0, "NEWER")  # a third prompt replaces the one used least recently
+        assert llm.has_system_copy("OLD") and llm.has_system_copy("NEWER") and not llm.has_system_copy("NEW")
+
+    asyncio.run(go())
+
+
+def test_a_simulation_keeps_its_prompt_after_reading_it_the_slow_way(cfg, tmp_path):
+    async def go():
+        class Mover(SlotMover):
+            async def answer(self, messages, kwargs):
+                return json.dumps({"scene": "Brandon pets him", "reply": "*purrs*", "feeling": "liked", "about": ""})
+
+        llm = Mover(tmp_path)
+        brain = brain_for(cfg, tmp_path, llm)
+        await brain.db.connect()
+        brain.slot_key = CHORES
+        msg = message(mentions_me=True)
+        await brain.observe(msg, GuildSettings(), 0)
+        chores = llm.slot_for(CHORES)
+        await brain.compose(msg, "direct")  # nothing to copy it from yet
+        assert llm.actions == [(chores, "save", "system-1.bin")]
+        llm.forget_prefix(chores)
+        llm.actions.clear()
+        await brain.compose(msg, "direct")
+        assert llm.actions == [(chores, "restore", "system-1.bin")]
         await brain.db.close()
 
     asyncio.run(go())

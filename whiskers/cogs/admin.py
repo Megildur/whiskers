@@ -13,7 +13,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..llm import LLMError
-from ..simulate import GROUPS, PACKS, SCENES, Step, count_replies, run_scenes, scenes_for
+from ..simulate import GROUPS, PACKS, SCENES, TRANSCRIPT_FILE, Step, count_replies, run_scenes, scenes_for
 from ..text import person_name
 from ..ui import ask_to_confirm, embed
 
@@ -134,7 +134,7 @@ class SimulationProgress:
                 self.channel_message = await self.interaction.channel.send(content)
             else:
                 await self.channel_message.edit(content=content)
-        except discord.HTTPException as error:
+        except Exception as error:  # a network hiccup with Discord mustn't stop the simulation
             log.warning("Couldn't update the simulation progress: %s", error)
 
     async def update(self, step: Step) -> None:
@@ -155,20 +155,30 @@ class SimulationProgress:
                 "see what it understood.")
         mention = discord.AllowedMentions(users=[user])
         transcript = "\n".join(lines)
-        file = discord.File(io.BytesIO(transcript.encode()), filename="whiskers-simulation.txt")
+        for attempt in range(2):
+            file = discord.File(io.BytesIO(transcript.encode()), filename="whiskers-simulation.txt")
+            try:
+                if self.elapsed() < self.REPLY_EDIT_LIMIT:
+                    await self.interaction.followup.send(note, file=file, allowed_mentions=mention)
+                else:
+                    await self.interaction.channel.send(note, file=file, allowed_mentions=mention)
+                return
+            except discord.Forbidden as error:  # no permission to attach files
+                log.warning("Couldn't post the transcript file: %s", error)
+                break
+            except Exception as error:  # a network hiccup: try once more
+                log.warning("Couldn't post the transcript file: %s", error)
+                await asyncio.sleep(5)
         try:
-            if self.elapsed() < self.REPLY_EDIT_LIMIT:
-                await self.interaction.followup.send(note, file=file, allowed_mentions=mention)
+            if len(transcript) <= 20000:  # short enough to post as text
+                for start in range(0, len(transcript), 1900):
+                    await self.interaction.channel.send(f"```\n{transcript[start:start + 1900]}\n```")
             else:
-                await self.interaction.channel.send(note, file=file, allowed_mentions=mention)
-            return
-        except discord.HTTPException as error:
-            log.warning("Couldn't post the transcript file (%s); posting it as text.", error)
-        try:  # no permission to attach files: post the text instead
-            for start in range(0, len(transcript), 1900):
-                await self.interaction.channel.send(f"```\n{transcript[start:start + 1900]}\n```")
-        except discord.HTTPException as error:
-            log.warning("Couldn't post the transcript: %s", error)
+                await self.interaction.channel.send(
+                    f"{user.mention} I couldn't attach the transcript. It's saved on the server as "
+                    f"`data/{TRANSCRIPT_FILE}`.", allowed_mentions=mention)
+        except Exception as error:
+            log.warning("Couldn't post the transcript (it's in data/%s): %s", TRANSCRIPT_FILE, error)
 
 
 class JournalEditor(discord.ui.Modal, title="Edit Whiskers' journal"):

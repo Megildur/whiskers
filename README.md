@@ -90,7 +90,7 @@ Whiskers only reads and talks where you let it. Nothing happens until you do one
 | `/whiskers mischief <level>` | Manage Server | How often Whiskers starts games and shenanigans on his own: off, sometimes (default) or often. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), marathon (7 long chats, 288 replies, about 2 hours), all-discord (208 scenes, about 2½ hours) or all (266 scenes, about 6 hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
+| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), marathon (7 long chats, 288 replies, about 2 hours), all-discord (210 scenes, about 4 hours) or all (268 scenes, about 7 hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -178,7 +178,7 @@ The commented `.env.example` lists them all. The ones you might change:
 
   After changing it, restart. The new model downloads once; you can delete the old `.gguf` from `models/` to free space.
 - `LLM_THREADS`: CPU threads for the model. Leave it empty; Whiskers reads your plan's CPU limit.
-- `LLM_CONTEXT` and `LLM_SLOTS`: memory for conversations. Each channel Whiskers keeps ready gets 6144 tokens, plus one share for background chores: `18432` with `LLM_SLOTS=2` keeps two channels ready (16 GB server with `nemo-12b`), `12288` one, and `8192` suits small servers. `30720` with `LLM_SLOTS=4` keeps four, but needs about 5 GB of RAM for conversations alone: on a 16 GB server running `nemo-12b`, the AI engine crashed under it. Lower it if the server runs out of memory.
+- `LLM_CONTEXT` and `LLM_SLOTS`: memory for conversations. Each channel Whiskers keeps ready gets 6144 tokens, plus one share for background chores: `18432` with `LLM_SLOTS=2` keeps two channels ready (16 GB server with `nemo-12b`), `12288` one, and `8192` suits small servers. `30720` with `LLM_SLOTS=4` keeps four, but needs about 5 GB of RAM for conversations alone, which leaves memory tight on a 16 GB server running `nemo-12b`. Lower it if the server runs out of memory.
 - `LLM_SAVED_CHANNELS`: how many channels that lost their slot are kept on disk to come back quickly (default 4, about 0.5 GB of disk each with `nemo-12b`).
 - `LLM_FLASH_ATTN`: `auto` (default), `on` or `off`. On a CPU, `off` writes a little faster but reads prompts about a fifth slower, and reading is most of a reply's time, so keep `auto`. The log shows each reply's reading and writing speed if you want to compare.
 - `SCENE_NOTE`: `before` (default) or `after`. `after` makes replies several seconds faster but blander; see [How replies stay fast](#how-replies-stay-fast).
@@ -188,7 +188,9 @@ The commented `.env.example` lists them all. The ones you might change:
 
 ## Testing changes
 
-`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 266 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, a lot of everyday Discord chat, and seven marathon chats), so most packs take 5 to 25 minutes.
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 268 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, a lot of everyday Discord chat, and seven marathon chats), so most packs take 5 to 30 minutes.
+
+If the AI engine restarts partway, a simulation waits for it (up to 10 minutes) and carries on. Restarting the whole server ends it, so on a host with scheduled restarts, start long packs right after one. The transcript so far is saved after every scene as `data/simulation-transcript.txt`, so a run cut short isn't lost.
 
 The **feelings** pack starts some scenes with history (Angel almost loved enough to be chosen, Tearyu having pulled its tail before) and skips ahead in time ("--- The next day ---"), so only what Whiskers remembers about people carries over. Ordinary server chat is where Whiskers spends most of its life, so most scenes are Discord packs (all of them together: `all-discord`):
 

@@ -384,6 +384,9 @@ GROUPS = {"all-discord": [pack for pack in PACKS if pack.startswith("discord")]}
 # Everyone else starts fresh: Angel as a good friend, Milo and Kai as people Whiskers has seen around,
 # Rin as someone it has barely met and Tearyu as a stranger.
 DEFAULT_SEEDS: dict[str, dict] = {
+    # Whiskers always knows his human by name, as in real chat. Without this, scenes where someone else
+    # speaks first had a different system prompt until the owner spoke, and each switch re-read it all.
+    "owner": {},
     "friend": {"chats": 40, "affection": 30},
     "regular": {"chats": 8, "affection": 5},
     "mod": {"chats": 15, "affection": 10},
@@ -418,6 +421,10 @@ TIME_SKIP = 86400  # how much older remembered feelings get at a "time" step
 
 log = logging.getLogger("whiskers.simulate")
 REPLY_TIMEOUT = 240  # seconds; a normal reply takes well under a minute
+ENGINE_SETTLE = 15  # after an AI engine error, seconds before checking whether it's restarting
+ENGINE_WAIT = 10 * 60  # how long to wait for a restarting AI engine before giving up on the simulation
+ENGINE_POLL = 5  # seconds between checks while it restarts
+TRANSCRIPT_FILE = "simulation-transcript.txt"  # in data/: the transcript so far, kept even if the bot restarts
 FIRST_PERSON = re.compile(r"\*[^*]*\b(I|I'm|me|my|myself)\b[^*]*\*")
 DOG_LIKE = re.compile(r"\b(wag(s|ging|ged)?|panting|barks?|barking|woofs?)\b", re.I)
 SCREEN = re.compile(r"\b(phones?|screens?|links?|gifs?|pictures?)\b", re.I)  # things only on people's screens
@@ -612,9 +619,29 @@ async def _write_memory(bot: WhiskersBot, brain: Brain, db: Database, channel_id
 
     try:
         await bot.scheduler.run_chore(write)
-    except LLMError as error:
-        log.warning("Simulation: couldn't write a memory: %s", error)
+    except (LLMError, asyncio.TimeoutError) as error:  # it's tried again after the next reply
+        log.warning("Simulation: couldn't write a memory: %s", error or "it took too long")
     return written[0] if written else None
+
+
+def _keep_transcript(cfg, lines: list[str]) -> None:
+    """Save the transcript so far in data/, so a long run isn't lost if the server restarts partway."""
+    try:
+        (cfg.data_dir / TRANSCRIPT_FILE).write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except OSError as error:
+        log.warning("Couldn't save the simulation transcript: %s", error)
+
+
+async def _engine_back(bot: WhiskersBot) -> bool:
+    """After an error from the AI engine: True once it's running again (it restarts itself if llama-server
+    stops), False if it doesn't come back."""
+    await asyncio.sleep(ENGINE_SETTLE)  # give it time to notice that llama-server stopped
+    deadline = time.monotonic() + ENGINE_WAIT
+    while not getattr(bot.engine, "ready", True):
+        if time.monotonic() > deadline:
+            return False
+        await asyncio.sleep(ENGINE_POLL)
+    return True
 
 
 async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name: str, scenes: list[str],
@@ -647,6 +674,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
             brain = Brain(cfg, db, bot.llm, bot.scheduler, rng=random.Random(number))
             brain.user_id = bot.user.id if bot.user else 0
             brain.slot_key = CHORES  # keep real channels' cached conversations where they are
+            brain.set_owner(guild_id, owner_id)
             fill = {"name": cat, "owner": owner_name, **brain.pronouns}
             channel_id = next(rooms)  # a fresh "room" per scene
             lines.append(f"===== {name} =====")
@@ -696,11 +724,19 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 async def ready(_text: str) -> None:
                     posted.append(time.monotonic())
 
-                async with bot.scheduler.background_turn():  # real chat goes first
-                    started = time.monotonic()  # time spent waiting for real chat doesn't count
-                    reply = await asyncio.wait_for(
-                        brain.compose(msg, kind, ready=ready), timeout=REPLY_TIMEOUT,
-                    )
+                for attempt in range(2):
+                    posted.clear()
+                    try:
+                        async with bot.scheduler.background_turn():  # real chat goes first
+                            started = time.monotonic()  # time spent waiting for real chat doesn't count
+                            reply = await asyncio.wait_for(
+                                brain.compose(msg, kind, ready=ready), timeout=REPLY_TIMEOUT,
+                            )
+                        break
+                    except LLMError as error:  # if the AI engine restarted, carry on once it's back
+                        if attempt or not await _engine_back(bot):
+                            raise
+                        log.warning("Simulation: %s. Trying that reply again.", error)
                 seconds = (posted[0] if posted else time.monotonic()) - started
                 await brain.record_own_message(msg, next(ids), reply, time.time(), unprompted=kind == "mischief")
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
@@ -738,7 +774,10 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                     lines.append(f"    (writes a memory: {memory})")
                 lines.append("")
                 await _real_chores(bot)
-                await bot.scheduler.run_chore(lambda: asyncio.wait_for(brain.prepare_next(msg), REPLY_TIMEOUT))
+                try:
+                    await bot.scheduler.run_chore(lambda: asyncio.wait_for(brain.prepare_next(msg), REPLY_TIMEOUT))
+                except (LLMError, asyncio.TimeoutError) as error:  # only a head start; the reply works without it
+                    log.warning("Simulation: couldn't get the next reply ready: %s", error or "it took too long")
             if lines[-1]:
                 lines.append("")
             feelings_now = [f"{p.name} {p.affection:+.0f}" + (" (human)" if p.user_id == owner_id else "")
@@ -746,8 +785,10 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                             for p in await db.people(guild_id, 10) if p.user_id in involved]
             if feelings_now:
                 lines += [f"    (how {cat} feels now: {' · '.join(feelings_now)})", ""]
+            _keep_transcript(cfg, lines)
         summary = ", ".join(f"{kind}: {count}" for kind, count in sorted(flagged.items(), key=lambda kv: -kv[1]))
         lines += ["===== summary =====", *measures(played), f"warnings: {summary or 'none'}"]
+        _keep_transcript(cfg, lines)
     finally:
         await db.close()
         path.unlink(missing_ok=True)

@@ -63,6 +63,8 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         assert "Brandon +6 (human)" in transcript
         assert await db.recent_messages(1000, 10) == []  # the real database is untouched
         assert not (cfg.data_dir / "simulation.db").exists()
+        saved = (cfg.data_dir / "simulation-transcript.txt").read_text()  # kept on disk in case of a restart
+        assert saved.strip() == transcript.strip()
         await db.close()
 
     asyncio.run(go())
@@ -305,3 +307,70 @@ def test_the_time_left_comes_from_recent_replies_not_a_slow_start():
     progress._finished_at.extend([520.0, 540.0])
     assert progress.time_left() == 97 * 20
     assert _duration(97 * 20) == "32m 20s" and _duration(7 * 3600 + 125) == "7h 02m"
+
+
+def test_every_scene_starts_with_the_same_system_prompt(cfg, tmp_path):
+    """A changed system prompt is read again from scratch, which takes minutes on a CPU."""
+    class Recorder(FakeLLM):
+        async def answer(self, messages, kwargs):
+            if kwargs.get("max_tokens") != 1:
+                self.prompts = getattr(self, "prompts", []) + [messages[0]["content"]]
+            return await super().answer(messages, kwargs)
+
+    async def go():
+        db = Database(tmp_path / "real.db")
+        await db.connect()
+        bot = SimpleNamespace(cfg=cfg, db=db, llm=Recorder(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
+                              engine=SimpleNamespace(description="fake"))
+        await run_scenes(bot, 1, 7, "Brandon", ["window", "stranger", "catnip"])  # Brandon isn't first in two
+        starts = {prompt[:3000] for prompt in bot.llm.prompts}
+        assert len(starts) == 1 and "Brandon is your human" in starts.pop()
+        await db.close()
+
+    asyncio.run(go())
+
+
+def test_a_simulation_carries_on_after_the_ai_engine_restarts(cfg, tmp_path, monkeypatch):
+    from whiskers import simulate
+    from whiskers.llm import LLMError
+
+    monkeypatch.setattr(simulate, "ENGINE_SETTLE", 0)
+    monkeypatch.setattr(simulate, "ENGINE_POLL", 0.01)
+    engine = SimpleNamespace(description="fake", ready=True)
+
+    class RestartsOnce(FakeLLM):
+        restarted = False
+
+        async def answer(self, messages, kwargs):
+            if kwargs.get("max_tokens") != 1 and self.calls == 2 and not self.restarted:
+                self.restarted, engine.ready = True, False  # llama-server stopped; the engine restarts it
+                asyncio.get_running_loop().call_later(0.05, setattr, engine, "ready", True)
+                raise LLMError("couldn't reach the AI engine")
+            return await super().answer(messages, kwargs)
+
+    async def go():
+        db = Database(tmp_path / "real.db")
+        await db.connect()
+        bot = SimpleNamespace(cfg=cfg, db=db, llm=RestartsOnce(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
+                              engine=engine)
+        transcript = await run_scenes(bot, 1, 7, "Brandon", ["dinner"])
+        assert bot.llm.restarted and bot.llm.calls == count_replies(["dinner"])
+        assert "===== summary =====" in transcript
+        await db.close()
+
+    asyncio.run(go())
+
+
+def test_a_network_hiccup_doesnt_stop_the_simulation_progress():
+    import aiohttp
+
+    from whiskers.cogs.admin import SimulationProgress
+
+    class Interaction:
+        async def edit_original_response(self, content):
+            raise aiohttp.ClientOSError("connection reset")
+
+    async def go():
+        await SimulationProgress(Interaction(), 10, 1)._show("🧪 running")  # logged, not raised
+
+    asyncio.run(go())

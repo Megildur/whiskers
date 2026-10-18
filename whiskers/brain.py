@@ -791,6 +791,11 @@ class Brain:
                  result.tokens, speeds, (posted_at or time.monotonic()) - begun, time.monotonic() - begun, text)
         if scene:
             log.info("Scene in %s: %s", msg.channel_id, scene)
+        if self.slot_key is not None and slot is not None and not self.llm.has_system_copy(system):
+            try:  # a simulation's own prompt, read the slow way once: keep it to copy back after chores
+                await self.llm.save_system(slot, system)
+            except LLMError as error:
+                log.warning("Couldn't keep a copy of the simulation's prompt: %s", error)
         self._felt.pop(msg.channel_id, None)
         if kind in ("direct", "home"):  # chiming in on other people's chat says little about how they treat Whiskers
             try:

@@ -18,6 +18,7 @@ log = logging.getLogger("whiskers.llm")
 
 THINK_BLOCK = re.compile(r"<think>.*?</think>", re.S)
 CHORES = "chores"  # the conversation key for background chores
+SYSTEM_COPIES = 2  # saved prompts: Whiskers' own, and a simulation's (which keeps the journal it started with)
 
 
 class LLMError(Exception):
@@ -45,9 +46,10 @@ class LLMClient:
         self._slots: dict[object, int] = {}  # conversation -> its llama-server slot, least recently used first
         self._prefixes: dict[int, str] = {}  # slot -> the system prompt it has cached
         # Conversations that lost their slot, saved to disk: conversation -> (file, the system prompt in it),
-        # least recently saved first. And a saved copy of a slot holding the current system prompt.
+        # least recently saved first. And saved copies of slots that start with a system prompt:
+        # system prompt -> file, least recently used first.
         self._saved: dict[object, tuple[str, str]] = {}
-        self._system_file: tuple[str, str] | None = None  # (system prompt, file)
+        self._system_files: dict[str, str] = {}
 
     # ---- llama-server slots: one per conversation, so each keeps its own cache ----
 
@@ -57,7 +59,7 @@ class LLMClient:
             self._slots.clear()
             self._prefixes.clear()
             self._saved.clear()
-            self._system_file = None
+            self._system_files.clear()
 
     def conversation_slots(self) -> list[int]:
         return list(range(self.engine.chat_slots))
@@ -126,22 +128,38 @@ class LLMClient:
         self._check_restart()
         if not self.can_save_slots:
             return False
-        if not (self._system_file and self._system_file[0] == system):
+        if system not in self._system_files:
             donor = next((s for s, prefix in self._prefixes.items() if prefix == system and s != slot), None)
             if donor is None:
                 return False
             await self.save_system(donor, system)
-        result = await self._slot_action(slot, "restore", self._system_file[1])
+        filename = self._system_files[system] = self._system_files.pop(system)  # now the most recently used
+        result = await self._slot_action(slot, "restore", filename)
         self._prefixes[slot] = system
         log.info("Copied Whiskers' prompt into slot %d (%s tokens in %.1fs).", slot, result.get("n_restored"),
                  result.get("seconds", 0))
         return True
 
+    def has_system_copy(self, system: str) -> bool:
+        return system in self._system_files
+
     async def save_system(self, slot: int, system: str) -> None:
-        """Keep a copy of a slot that has the current system prompt, for slots that don't have it yet."""
-        if self.can_save_slots and slot is not None:
-            await self._slot_action(slot, "save", "system.bin")
-            self._system_file = (system, "system.bin")
+        """Keep a copy of a slot that starts with a system prompt, for slots that don't have it yet.
+
+        Two prompts are kept: during a simulation its prompt stays as it was when it started, while the real
+        one changes with every journal update. With one copy, each would push out the other."""
+        if not self.can_save_slots or slot is None:
+            return
+        filename = self._system_files.pop(system, None)
+        if filename is None:
+            if len(self._system_files) >= SYSTEM_COPIES:  # reuse the file of the prompt used least recently
+                filename = self._system_files.pop(next(iter(self._system_files)))
+            else:
+                used = set(self._system_files.values())
+                filename = next(name for name in (f"system-{n}.bin" for n in range(1, SYSTEM_COPIES + 1))
+                                if name not in used)
+        await self._slot_action(slot, "save", filename)
+        self._system_files[system] = filename
 
     async def _save_conversation(self, conversation: object, slot: int) -> None:
         keep = max(0, getattr(self.cfg, "llm_saved_channels", 0))
