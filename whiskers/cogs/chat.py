@@ -101,8 +101,7 @@ class Chat(commands.Cog):
             await self._react(message, decision.reaction)
         if not decision.reply or not self._can_send(message.channel):
             return
-        # A home channel's waiting reply just takes in the new message, so it never counts as too busy.
-        if not bot.engine.ready or (decision.reply != "home" and bot.brain.too_busy(decision.reply)):
+        if not bot.engine.ready or bot.brain.too_busy(decision.reply, incoming):
             if decision.to_me:
                 await self._react(message, "💤")  # asleep (still loading) or too many people waiting
             return
@@ -167,6 +166,7 @@ class Chat(commands.Cog):
         )
         replied = message.reference.resolved if message.reference else None
         replies_to_me = isinstance(replied, discord.Message) and replied.author.id == me.id
+        replies_to_other = isinstance(replied, discord.Message) and replied.author.id not in (me.id, message.author.id)
         return Incoming(
             message_id=message.id,
             guild_id=message.guild.id if message.guild else 0,
@@ -177,6 +177,7 @@ class Chat(commands.Cog):
             created_at=message.created_at.timestamp(),
             mentions_me=mentions_me,
             replies_to_me=replies_to_me,
+            replies_to_other=replies_to_other,
             is_dm=message.guild is None,
         )
 
@@ -199,6 +200,7 @@ class Chat(commands.Cog):
         settings = await self.bot.db.guild_settings(msg.guild_id) if msg.guild_id else GuildSettings()
 
         async def deliver(text: str) -> int | None:
+            msg = job.message  # the newest message it answers: more may have come in while the reply waited
             reference = None
             answering = job.kind != "mischief"  # mischief Whiskers started himself isn't an answer to anyone
             if answering and (job.kind == "direct" or self.bot.brain.last_message_id(msg.channel_id) != msg.message_id):

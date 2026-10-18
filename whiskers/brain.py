@@ -21,7 +21,7 @@ from .llm import CHORES, ChatResult, LLMClient, LLMError, parse_json
 from .prompts import (
     PRONOUNS, SCENE_LIMIT, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, prefill_messages,
     reflection_messages, reflection_schema, reply_messages, reply_schema, reply_system_prompt, summary_messages,
-    transcript,
+    transcript, without_dog_habits,
 )
 from .scheduler import Scheduler
 from .text import (
@@ -97,6 +97,11 @@ MISCHIEF = {
 MISCHIEF_QUIET = 5 * 60  # Whiskers starts something when nobody has said anything for this long...
 MISCHIEF_AROUND = 45 * 60  # ...but someone was talking within this, so there's somebody to bother
 MISCHIEF_IGNORED = 20 * 60  # nobody said anything this long after one: the next waits twice the usual gap
+ROOM_WINDOW = 5 * 60  # someone who wrote in a channel within this is still around
+# Roleplay that sets a scene even without naming Whiskers: an action in *asterisks* or _underscores_, or
+# someone narrating what they do ("I put him in the tub").
+ROLEPLAY = re.compile(r"\*[^*\n]+\*|(?<!\w)_[^_\n]+_(?!\w)|^\s*(i|we)\s+\w+.*\b(him|his|her|the cat|kitty)\b", re.I)
+YOU = re.compile(r"\b(you|your|you're|u|ur|ya)\b", re.I)
 
 
 @dataclass
@@ -112,6 +117,7 @@ class Incoming:
     replies_to_me: bool = False
     is_dm: bool = False
     owner_id: int = 0  # Whiskers' human in this server
+    replies_to_other: bool = False  # a reply to someone else's message, not Whiskers'
 
 
 @dataclass
@@ -246,13 +252,16 @@ class Brain:
         self._last_reacted: dict[int, float] = {}
         self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
         self._prepared: dict[int, Prepared] = {}  # channel -> notes for its next reply, already read
-        self._seen: dict[int, int] = {}  # channel -> newest message a posted reply had read
         self._active_guild = 0
         self.slot_key: object | None = None  # which cache slot replies use; None means one per channel
         self.scene_first = cfg.scene_note == "before"
         self.reply_schema = reply_schema(self.scene_first)
         self._last_own: dict[int, int] = {}  # channel -> Whiskers' latest message ID
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
+        # (channel, person) -> newest message the latest posted reply to them had read
+        self._answered_upto: dict[tuple[int, int], int] = {}
+        self._room: dict[int, dict[int, tuple[str, float]]] = {}  # channel -> who wrote recently: (name, when)
+        self._last_author: dict[int, int] = {}  # channel -> who wrote its newest message
         self._window_start: dict[int, int] = {}
         self._chore_failures: dict[int, int] = {}
         self._mischief_at: dict[int, float] = {}  # channel -> when Whiskers last tried starting something there
@@ -279,6 +288,8 @@ class Brain:
             self._owners[msg.guild_id] = msg.owner_id
         profile = await self.db.profile(msg.guild_id, msg.author_id)
         decision = self.decide(msg, settings, chattiness, fondness=self.fondness(msg, profile), home=home)
+        self._room.setdefault(msg.channel_id, {})[msg.author_id] = (msg.author_name, msg.created_at)
+        self._last_author[msg.channel_id] = msg.author_id
         await self.db.touch_profile(msg.guild_id, msg.author_id, msg.author_name,
                                     chatted=decision.reply in ("direct", "home"))
         return decision
@@ -305,9 +316,9 @@ class Brain:
         )
         decision.to_me = bool(talking_to_me)
         if home:
-            # Its own channel: everything goes into one queue, even messages to Whiskers by name, so when the
-            # chat is busy one reply catches up with all of it instead of answering each person minutes late.
-            decision.reply = "home"
+            # Its own channel: Whiskers answers every message, except people talking to each other.
+            if talking_to_me or not self.between_people(msg, now):
+                decision.reply = "home"
         elif talking_to_me:
             decision.reply = "direct"
         else:
@@ -328,6 +339,30 @@ class Brain:
             if decision.reply == "ambient" and decision.reaction and self.rng.random() < 0.5:
                 decision.reply = None  # the reaction says enough
         return decision
+
+    def others_here(self, channel_id: int, author_id: int, now: float) -> list[str]:
+        """Names of the other people who wrote in a channel recently."""
+        room = self._room.get(channel_id, {})
+        return [name for person, (name, at) in room.items()
+                if person not in (author_id, self.user_id) and now - at < ROOM_WINDOW]
+
+    def between_people(self, msg: Incoming, now: float) -> bool:
+        """True for a message in a busy home channel that people send each other, not to Whiskers or as part of
+        the roleplay ("eh maybe", "you need to fix that"). It gets an emoji at most, so Whiskers doesn't butt into
+        every exchange and the people actually playing with him don't wait behind it."""
+        text = msg.content.strip()
+        first_name = msg.author_name.split()[0].lower() if msg.author_name.split() else ""
+        if ROLEPLAY.search(text) or (first_name and text.lower().startswith(first_name + " ")):
+            return False  # roleplay, or someone writing what they do by name ("Milo picks him up")
+        if msg.replies_to_other:
+            return True
+        if CAT_WORDS.search(text):
+            return False
+        if not self.others_here(msg.channel_id, msg.author_id, now):
+            return False  # only one person here: they're talking to Whiskers
+        if self._last_author.get(msg.channel_id) == self.user_id and YOU.search(text):
+            return False  # "you" straight after Whiskers' own message
+        return True
 
     def _pick_reaction(self, msg: Incoming, now: float, fondness: float = 1.0, scale: float = 1.0) -> str | None:
         if now - self._last_reacted.get(msg.channel_id, 0) < REACTION_GAP:
@@ -352,32 +387,32 @@ class Brain:
 
     # ---- queueing replies ----
 
-    def too_busy(self, kind: str) -> bool:
+    def too_busy(self, kind: str, msg: Incoming | None = None) -> bool:
         if kind == "ambient":
             return self.scheduler.busy
+        waiting = self._jobs.get((msg.channel_id, msg.author_id)) if msg else None
+        if waiting and not waiting.started:
+            return False  # their waiting reply just takes in the new message
         return self.scheduler.pending_replies >= self.cfg.max_queue
 
     def submit(self, kind: str, msg: Incoming) -> ReplyJob | None:
         """Queue a reply. None if an existing queued reply already covers this message.
 
-        In a home channel, messages that arrive while Whiskers is busy are answered together in one reply,
-        so it never falls minutes behind a fast chat."""
-        key = (msg.channel_id, msg.author_id if kind == "direct" else 0)
+        Each person gets their own reply, so when several people play with Whiskers at once, nobody's
+        interaction is lost in someone else's. Messages someone sends while their reply waits are answered
+        together in it."""
+        key = (msg.channel_id, msg.author_id if kind in ("direct", "home") else 0)
+        room = self._jobs.get((msg.channel_id, 0))
+        if room and not room.started and (room.kind == "mischief" or kind in ("direct", "home")):
+            # Someone spoke, so it isn't quiet anymore, or someone is talking to Whiskers: answer them instead.
+            room.cancelled = True
+            del self._jobs[room.key]
         existing = self._jobs.get(key)
-        if existing and existing.kind == "mischief" and not existing.started:
-            existing.cancelled = True  # someone spoke first, so it isn't quiet anymore: answer them instead
-            del self._jobs[key]
-            existing = None
         if existing and not existing.started:
             existing.message = msg  # they kept talking; answer the newest message once
             return None
         if kind == "ambient" and any(k[0] == msg.channel_id for k in self._jobs):
             return None
-        if kind == "direct":
-            room = self._jobs.get((msg.channel_id, 0))
-            if room and not room.started:
-                room.cancelled = True  # someone is talking to Whiskers; that reply covers the rest too
-                del self._jobs[room.key]
         job = ReplyJob(kind, msg, key)
         self._jobs[key] = job
         return job
@@ -452,8 +487,9 @@ class Brain:
                     await self.record_own_message(job.message, message_id, text, time.time(),
                                                   unprompted=job.kind == "mischief")
                     channel = job.message.channel_id
-                    self._seen[channel] = max(self._seen.get(channel, 0),
-                                              self._read_upto.get(channel, job.message.message_id))
+                    read = max(self._read_upto.get(channel, 0), job.message.message_id)
+                    person = (channel, job.message.author_id)
+                    self._answered_upto[person] = max(self._answered_upto.get(person, 0), read)
                     if self.scheduler.pending_replies <= 1:  # nobody else is waiting: get the next reply ready
                         try:
                             await self.prepare_next(job.message)
@@ -470,10 +506,8 @@ class Brain:
         Discord message IDs grow over time, so comparing them tells which message came first.
         """
         msg = job.message
-        if job.kind == "direct":
-            return self._last_answered.get((msg.channel_id, msg.author_id), 0) > msg.message_id
-        if job.kind == "home":  # only if a reply was written after reading this message
-            return self._seen.get(msg.channel_id, 0) >= msg.message_id
+        if job.kind in ("direct", "home"):  # only if a reply to them was written after reading this message
+            return self._answered_upto.get((msg.channel_id, msg.author_id), 0) >= msg.message_id
         if job.kind == "mischief":  # nobody has spoken since it was decided, or the job would be cancelled
             return False
         return self._last_own.get(msg.channel_id, 0) > msg.message_id
@@ -487,6 +521,7 @@ class Brain:
         self._last_spoke_to[(msg.channel_id, msg.author_id)] = now
         self._last_message[msg.channel_id] = message_id
         self._last_own[msg.channel_id] = message_id
+        self._last_author[msg.channel_id] = self.user_id
         self._last_answered[(msg.channel_id, msg.author_id)] = message_id
         if msg.guild_id:
             await self.db.count_cat_message(msg.guild_id)
@@ -568,9 +603,9 @@ class Brain:
                          "your own, unless someone is sad or it's a serious moment.")
         return notes
 
-    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False, since: list[str] | None = None) -> str:
-        """Which message to answer, and how. `since` names who wrote each message that came in since Whiskers'
-        last one (in a home channel, all of them are answered together)."""
+    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False, others: list[str] | None = None) -> str:
+        """Which message to answer, and how. `others` names the other people around in a home channel, who
+        each get their own reply."""
         latest = msg.content if len(msg.content) <= 160 else msg.content[:160] + "..."
         feeling = f'Your "feeling" is about {msg.author_name}.'
         said = "replied to your message" if msg.replies_to_me and not msg.mentions_me else "just said or did"
@@ -585,11 +620,11 @@ class Brain:
         if kind == "home":  # Whiskers' own channel: it answers everything there, called by name or not
             how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
             room = ""
-            if since and len(since) > 1:
-                names = list(dict.fromkeys(since))
-                names = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-                room = (f" {len(since)} messages came in since your last one, from {names}: answer the room as a "
-                        f"whole, picking what matters most to you, usually the newest or whatever is aimed at you.")
+            if others:
+                names = others[0] if len(others) == 1 else ", ".join(others[:-1]) + " and " + others[-1]
+                room = (f" {names} {'is' if len(others) == 1 else 'are'} here too and get their own replies, so this "
+                        f"one is only for {msg.author_name}. Keep each person's doings apart: what {msg.author_name} "
+                        f"did, {msg.author_name} did, not anyone else.")
             return (f'{msg.author_name} {said}: "{latest}". React as a cat would, {how}, carrying on from what\'s '
                     f"been happening.{room} If it's clearly meant for someone else, do your own cat thing nearby. "
                     f"{feeling}")
@@ -651,6 +686,7 @@ class Brain:
                 if row.is_self:
                     break
                 since.insert(0, row.author_name)
+        others = self.others_here(msg.channel_id, msg.author_id, msg.created_at) if kind == "home" else []
         self._read_upto[msg.channel_id] = max([r.message_id for r in rows if not r.is_self] + [msg.message_id])
         system = await self.system_prompt(msg.guild_id, journal)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
@@ -671,7 +707,7 @@ class Brain:
             words = keywords(" ".join([msg.content] + [r.content for r in rows[-4:] if not r.is_self]))
             notes, _, _ = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id, msg.owner_id, words)
             after = []
-        after.append(self.reply_note(msg, kind, journal.can_speak, since if kind == "home" else None))
+        after.append(self.reply_note(msg, kind, journal.can_speak, others))
         slot = await self._ready_slot(msg.channel_id, system)
 
         def finish(raw: str) -> str:
@@ -1003,6 +1039,8 @@ class Brain:
             new = journal_from_lines(data["journal"])
         else:
             new = parse_journal(result.text)
+        if new is not None:
+            new = without_dog_habits(new) or None
         changed = new is not None and new.strip() != journal.text.strip()
         if changed:
             await self.db.set_journal(guild_id, new, reason)

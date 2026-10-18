@@ -51,3 +51,34 @@ def test_mischief_is_only_started_in_home_channels(tmp_path):
         await db.close()
 
     asyncio.run(go())
+
+
+def test_the_reply_quotes_the_message_it_actually_answers():
+    from whiskers.brain import Incoming, ReplyJob
+
+    async def go():
+        sent = []
+
+        class Channel:
+            async def send(self, text, reference=None, allowed_mentions=None):
+                sent.append(reference.message_id if reference else None)
+                return SimpleNamespace(id=900)
+
+        def message(message_id, author):
+            return Incoming(message_id, 1, 10, author, f"user{author}", "*pets him*", 1000.0)
+
+        job = ReplyJob("home", message(1, 3), (10, 3))
+
+        async def respond(job, typing, deliver):
+            job.message = message(2, 3)  # they wrote again before the reply started
+            await deliver("*purrs*")
+
+        bot = SimpleNamespace(db=SimpleNamespace(guild_settings=lambda guild_id: asyncio.sleep(0, SimpleNamespace(
+                                  ping_on_reply=False))),
+                              brain=SimpleNamespace(respond=respond, last_message_id=lambda channel_id: 5))
+        cog = Chat.__new__(Chat)
+        cog.bot = bot
+        await cog._answer(job, Channel())
+        assert sent == [2]  # the newest message it answers, not the one the reply was first queued for
+
+    asyncio.run(go())

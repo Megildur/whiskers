@@ -138,7 +138,7 @@ class SimulationProgress:
             log.warning("Couldn't update the simulation progress: %s", error)
 
     async def update(self, step: Step) -> None:
-        self.done, self.last = step.done, step
+        self.done, self.total, self.last = step.done, step.total, step
         self.reply_started = time.monotonic()
         self._finished_at.append(self.reply_started)
         await self._show(self.text())

@@ -36,7 +36,13 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         bot = SimpleNamespace(cfg=cfg, db=db, llm=FakeLLM(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
                               engine=SimpleNamespace(description="fake"))
         transcript = await run_scenes(bot, 1, 7, "Brandon", list(SCENES))
-        assert bot.llm.calls == count_replies(list(SCENES))
+        left_alone = transcript.count("    (no reply: people talking to each other)")
+        assert bot.llm.calls == count_replies(list(SCENES)) - left_alone
+        # In a busy home channel Whiskers answers each person's roleplay and leaves their chat with each other
+        assert left_alone == 7
+        assert "Brandon: lol milo is spoiling him\n    (no reply: people talking to each other)" in transcript
+        assert "Milo (replying to someone else): someone has to\n    (no reply" in transcript
+        assert "Milo: Milo puts Whiskers down and walks away\n    (scene: scene" in transcript
         assert bot.llm.memories >= 7  # every long scene is turned into memories as it goes
         assert "    (writes a memory: Milo played laser with Whiskers for ages (1).)" in transcript
         assert "how Whiskers holds up as a scene goes on:" in transcript and "  replies 31+ (" in transcript
@@ -160,14 +166,14 @@ def test_every_scene_line_is_valid_for_both_genders():
             whiskers_spoke = someone_spoke = False
             for step in steps:
                 who, template, how = step_parts(step)
-                assert len(step) in (2, 3) and how in ("direct", "reply", "chat", "chime"), name
+                assert len(step) in (2, 3) and how in ("direct", "reply", "chat", "chime", "room", "aside"), name
                 assert who in people | {"time", "quiet"}, name
                 if who == "quiet":
                     assert len(step) == 2 and someone_spoke, f"{name}: a lull needs someone in the room first"
                 elif who != "time":
                     someone_spoke = True
                 assert "{" not in template.format(name="Whiskers", owner="Brandon", **pronouns), name
-                if how in ("chat", "chime"):
+                if how in ("chat", "chime", "aside"):
                     assert "{name}" not in template, f"{name}: saying the cat's name would be talking to it"
                 if how == "reply":
                     assert whiskers_spoke, f"{name}: a reply needs a message from Whiskers to reply to"

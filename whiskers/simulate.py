@@ -15,9 +15,10 @@ A step is (who, line) or (who, line, how).
   room starts fresh and only what Whiskers remembers about people carries on) or "quiet": nobody says
   anything for a while, so Whiskers starts some mischief on his own, as he does in a quiet home channel.
 - how: "direct" (the default: they ping Whiskers or say its name), "reply" (they reply to Whiskers' last
-  message), "chat" (people talking among themselves: Whiskers reads it but doesn't answer) or "chime"
-  (not meant for Whiskers, but it answers anyway, as in its home channels; any "chat" lines just before
-  are answered in the same reply, as when several messages arrive while it's busy).
+  message), "chat" (people talking among themselves: Whiskers reads it but doesn't answer), "chime"
+  (not meant for Whiskers, but it answers anyway, as in its home channels), or "room" and "aside": a
+  message in a busy home channel, where Whiskers decides for himself as he does in real chat, answering
+  the roleplay and leaving people's chat with each other alone ("aside" is a reply to another person).
 
 Times are how long until the reply would be posted, with the start of each reply read ahead of time as
 it is in real chat while people type (Brain.prepare_next). Emoji reactions show up as "(reacts with ...)".
@@ -673,16 +674,23 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                     text = readable(text)  # links, custom emoji and times, as real messages arrive
                     user_id, user_name = people[who]
                     involved.add(user_id)
+                    room = how in ("room", "aside")  # Whiskers decides, as in a busy home channel
                     msg = Incoming(next(ids), guild_id, channel_id, user_id, user_name, text, time.time(),
-                                   mentions_me=how == "direct", replies_to_me=how == "reply", owner_id=owner_id)
-                    decision = await brain.observe(msg, GuildSettings(name_trigger=False), 0, home=how == "chime")
+                                   mentions_me=how == "direct", replies_to_me=how == "reply", owner_id=owner_id,
+                                   replies_to_other=how == "aside")
+                    decision = await brain.observe(msg, GuildSettings(name_trigger=room), 0,
+                                                   home=how == "chime" or room)
                     reacted = f"    (reacts with {decision.reaction})" if decision.reaction else ""
                     props.update(keywords(text, limit=20))
-                    if how == "chat":
-                        lines += [f"{user_name}: {text}"] + ([reacted] if reacted else [])
+                    said = {"reply": f"{user_name} (replying to {cat}): {text}",
+                            "aside": f"{user_name} (replying to someone else): {text}"}.get(how, f"{user_name}: {text}")
+                    if how == "chat" or (room and decision.reply != "home"):
+                        lines += [said] + ([reacted] if reacted else [])
+                        if room:
+                            lines.append("    (no reply: people talking to each other)")
+                            total -= 1
                         continue
-                    kind = "home" if how == "chime" else "direct"
-                    said = f"{user_name} (replying to {cat}): {text}" if how == "reply" else f"{user_name}: {text}"
+                    kind = "home" if how in ("chime", "room", "aside") else "direct"
                 posted: list[float] = []
 
                 async def ready(_text: str) -> None:

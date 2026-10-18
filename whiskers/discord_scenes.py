@@ -1130,6 +1130,38 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("friend", "aww is {he} scared", "chime"),
             ("owner", "*wraps {name} in a blanket*"),
         ],
+        # Two people playing with Whiskers separately while they chat with each other. He decides what to
+        # answer, as in a busy home channel: each person's roleplay gets its own reply, and their chat with
+        # each other gets none. "Milo ... walks away" must be about Milo, not the owner.
+        "kitchen-and-couch": [
+            ("regular", "Milo puts some treats next to {name}'s food bowl", "room"),
+            ("owner", "*sits on the couch and pats the cushion next to me*", "room"),
+            ("regular", "Milo pours fresh water into another bowl and sets it down near the treats", "room"),
+            ("owner", "lol milo is spoiling him", "room"),
+            ("regular", "someone has to", "aside"),
+            ("owner", "did you see the game last night", "room"),
+            ("regular", "yeah that ending was insane", "aside"),
+            ("regular", "Milo waits by the kitchen door to see what happens", "room"),
+            ("owner", "*shakes the treat bag from the living room*", "room"),
+            ("regular", "Milo picks {name} up and carries {him} to the couch", "room"),
+            ("owner", "*scratches behind {his} ears*", "room"),
+            ("regular", "Milo puts {name} down and walks away", "room"),
+            ("owner", "aww he wanted more milo", "room"),
+            ("owner", "*holds out a hand for {him} to sniff*", "room"),
+        ],
+        # Three people doing different things at once: who did what has to stay straight.
+        "who-did-that": [
+            ("friend", "*rolls a jingle ball across the floor*", "room"),
+            ("regular", "Milo opens a can of tuna in the kitchen", "room"),
+            ("owner", "*lies down on the floor and wiggles my fingers*", "room"),
+            ("friend", "ok who's winning his attention", "room"),
+            ("regular", "obviously me, i have tuna", "aside"),
+            ("friend", "*rolls the jingle ball again, closer this time*", "room"),
+            ("regular", "Milo sets the tuna on a plate on the floor", "room"),
+            ("owner", "*boops {his} nose*", "room"),
+            ("friend", "Angel picks up the jingle ball and leaves the room", "room"),
+            ("regular", "Milo takes the plate back before it's finished", "room"),
+        ],
     },
 }
 

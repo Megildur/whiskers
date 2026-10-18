@@ -116,26 +116,51 @@ def test_reactions_are_spaced_out_and_can_replace_a_chime_in(cfg):
     assert swapped.reply is None and swapped.reaction  # an emoji instead of writing a whole reply
 
 
-def test_home_channels_answer_every_message_and_batch_them_when_busy(cfg):
+def test_home_channels_answer_every_message_and_each_person_separately(cfg):
     brain = make_brain(cfg)
     quiet = GuildSettings(reactions=False)
     assert brain.decide(incoming("lol", author=2), quiet, 0, home=True).reply == "home"
-    # Even messages to Whiskers by name share the channel's one queue at home, so a busy chat is answered together
     called = brain.decide(incoming("whiskers hi", author=2), quiet, 0, home=True)
     assert (called.reply, called.to_me) == ("home", True)
     assert brain.decide(incoming("whiskers hi", author=2), quiet, 0).reply == "direct"
     assert brain.decide(incoming("lol", author=2), quiet, 0).reply is None  # elsewhere it only chimes in sometimes
 
-    first = brain.submit("home", incoming("lol", author=2, message_id=10))
+    first = brain.submit("home", incoming("*picks him up*", author=2, message_id=10))
     first.started = True  # Whiskers is writing a reply that read message 10
-    second = brain.submit("home", incoming("what", author=3, message_id=11))
-    assert second is not None
-    assert brain.submit("home", incoming("ok", author=4, message_id=12)) is None  # joins the waiting reply
-    assert second.message.message_id == 12
-    brain._seen[10] = 10  # the first reply was posted, but it hadn't read messages 11 and 12
-    assert not brain.already_answered(second)
-    brain._seen[10] = 12
-    assert brain.already_answered(second)
+    other = brain.submit("home", incoming("*shakes the treat bag*", author=3, message_id=11))
+    again = brain.submit("home", incoming("*puts him in the tub*", author=2, message_id=12))
+    assert other is not None and again is not None  # someone else's interaction isn't lost in user2's
+    assert brain.submit("home", incoming("*runs the water*", author=2, message_id=13)) is None  # joins their wait
+    assert again.message.message_id == 13
+
+    brain._answered_upto[(10, 2)] = 11  # the first reply was posted, but it hadn't read 12 and 13
+    assert not brain.already_answered(again) and not brain.already_answered(other)
+    brain._answered_upto[(10, 2)] = 13
+    assert brain.already_answered(again) and not brain.already_answered(other)
+
+
+def test_people_talking_to_each_other_at_home_get_no_reply(cfg):
+    brain = make_brain(cfg)
+    brain.user_id = 99
+    quiet = GuildSettings(reactions=False)
+
+    def home(text, **kwargs):
+        return brain.decide(incoming(text, author=2, **kwargs), quiet, 0, now=1000.0, home=True).reply
+
+    assert home("eh maybe") == "home"  # nobody else here: they're talking to Whiskers
+    brain._room[10] = {3: ("General Kenobi", 990.0), 2: ("user2", 995.0)}
+    assert home("eh maybe") is None
+    assert home("And losing some context. Needs work still") is None
+    assert home("Cat do tail thumping", replies_to_other=True) is None  # a reply to someone else
+    assert home("*hands him a treat*", replies_to_other=True) == "home"  # roleplay always gets an answer
+    assert home("user2 puts more treats in the bowl") == "home"  # roleplay in the third person
+    assert home("I put him in the water and grab the shampoo") == "home"
+    assert home("good kitty") == "home"
+    assert home("whiskers come here") == "home"
+    brain._last_author[10] = 99
+    assert home("are you hungry?") == "home"  # "you" straight after Whiskers' own message
+    brain._room[10] = {3: ("General Kenobi", 600.0), 2: ("user2", 995.0)}  # Kenobi left a while ago
+    assert home("eh maybe") == "home"
 
 
 # ---- queueing ----
@@ -161,7 +186,9 @@ def test_queued_reply_is_skipped_if_whiskers_already_answered_that_person(cfg):
     first.started = True  # Whiskers is busy answering message 3
     second = brain.submit("direct", incoming("whiskers??", author=8, message_id=4))
     assert second is not None and not brain.already_answered(second)
-    brain._last_answered[(10, 8)] = 9  # its reply to message 3 was posted after message 4
+    brain._answered_upto[(10, 8)] = 3  # its reply to message 3 was posted, but hadn't read message 4
+    assert not brain.already_answered(second)
+    brain._answered_upto[(10, 8)] = 4  # message 4 came in before it started reading
     assert brain.already_answered(second)
 
     other = brain.submit("direct", incoming("whiskers hi", author=7, message_id=5))
@@ -508,7 +535,7 @@ def test_someone_talking_first_cancels_the_mischief(cfg):
     mischief = ReplyJob("mischief", incoming("brb", message_id=1), (10, 0))
     brain._jobs[mischief.key] = mischief
     job = brain.submit("home", incoming("back", message_id=2))
-    assert mischief.cancelled and job.kind == "home" and brain._jobs[(10, 0)] is job
+    assert mischief.cancelled and job.kind == "home" and brain._jobs == {(10, 1): job}
 
 
 def test_now_and_then_whiskers_is_nudged_to_start_something(cfg, tmp_path):
@@ -533,7 +560,7 @@ def test_now_and_then_whiskers_is_nudged_to_start_something(cfg, tmp_path):
     asyncio.run(go())
 
 
-def test_a_busy_home_channel_is_answered_as_a_room(cfg, tmp_path):
+def test_in_a_busy_home_channel_each_reply_is_for_one_person(cfg, tmp_path):
     import asyncio
     import json
 
@@ -549,8 +576,9 @@ def test_a_busy_home_channel_is_answered_as_a_room(cfg, tmp_path):
             await brain.observe(msg, GuildSettings(), 0, home=True)
         await brain.compose(msg, "home")
         note = brain.llm.calls[-1][0][-1]["content"]
-        assert '3 messages came in since your last one, from user6 and user5: answer the room as a whole' in note
         assert 'user6 just said or did: "ik you love me"' in note
+        assert "user5 is here too and get their own replies, so this one is only for user6" in note
+        assert "what user6 did, user6 did, not anyone else" in note
         await brain.db.close()
 
     asyncio.run(go())

@@ -75,7 +75,7 @@ Whiskers only reads and talks where you let it. Nothing happens until you do one
 /whiskers roam roaming:On
 ```
 
-- **Home channels** (`/whiskers channel allow`): Whiskers answers **every message** there, whether it's meant for it or not. When several messages arrive while it's busy, even ones that call it by name or reply to it, it answers them together in one reply to the room instead of answering each person minutes late (emoji reactions still come right away). You can allow a whole category at once, and threads follow their parent channel.
+- **Home channels** (`/whiskers channel allow`): Whiskers answers **every message** there, whether it's meant for it or not. When several people play with him at once, each person gets their own reply (a Discord reply to their message), so nobody's interaction is lost in someone else's and he keeps straight who did what. Messages someone sends while their reply waits are answered together in it. The one thing he leaves alone is people talking to each other while others are around: a reply to someone else's message, or plain chat like "eh maybe" that isn't roleplay (no *actions*, and not "Milo picks him up"), doesn't name him and doesn't come straight after his own message. That gets an emoji reaction at most. You can allow a whole category at once, and threads follow their parent channel.
 - **Roaming** (`/whiskers roam`): Whiskers can also wander into every other channel it can see. There it answers when someone mentions it, replies to it or says its name, and joins in or reacts on its own when something catches its interest (`/whiskers chattiness` sets how often). `/whiskers channel block` keeps it out of a channel completely.
 
 ## Commands
@@ -123,7 +123,7 @@ Whiskers' personality has two layers:
 
 The update waits for a quiet moment: on a CPU it takes a few minutes, and anyone talking to Whiskers interrupts it. A very active server may never have one, so once the journal (or writing memories of chat, which works the same way) has been put off for 15 minutes, it takes its turn in the reply queue like a reply would, and replies wait a couple of minutes for it. The journal goes first, because a busy server always has some chat waiting to become memories. Simulations step aside for both between replies. `/cat journal` shows when the next update is due, and `/whiskers personality evolve` does one right away.
 
-The journal is the truth for Whiskers: whatever it says, Whiskers does. You can steer it with `/whiskers personality edit`, roll back a change you don't like with `undo`, or start over with `reset`. Each server has its own Whiskers.
+The journal is the truth for Whiskers: whatever it says, Whiskers does. That's why it never keeps dog habits (wagging or happily thumping his tail, panting, barking) or people's talk about fixing or testing the bot: a line like that would outweigh his rules on every reply, so it's left out even if someone asks for it. You can steer it with `/whiskers personality edit`, roll back a change you don't like with `undo`, or start over with `reset`. Each server has its own Whiskers.
 
 ### Who it loves, and who it holds a grudge against
 
@@ -204,7 +204,7 @@ The **feelings** pack starts some scenes with history (Angel almost loved enough
 | `discord-server` | New members, rules, giveaways, holidays, server boosts, counting, dead chat, Whiskers as mascot |
 | `discord-people` | How he treats people in chat: venting friends, a busy human, a second cat, old grudges, favourites coming online |
 | `discord-odd` | Punctuation only, other languages, typos of his name, other bots' commands, long rants, "are you ChatGPT" |
-| `discord-busy` | Long, noisy stretches of a busy channel (10 to 16 messages) with Whiskers pulled in partway |
+| `discord-busy` | Long, noisy stretches of a busy channel (10 to 16 messages) with Whiskers pulled in partway, and two scenes (`kitchen-and-couch`, `who-did-that`) where several people play with him at once while chatting with each other: he decides what to answer as in a real home channel, and each person's actions must stay theirs |
 
 Lines are written the way people really type, and links, custom emoji and pings go through the same clean-up as real messages (a Tenor link reaches Whiskers as "[sends a gif: cat vibing]"). Whiskers reads every line, sometimes chimes in (marked "chimes in") and answers when someone pings him, says his name or replies to his message (marked "replying to Whiskers").
 

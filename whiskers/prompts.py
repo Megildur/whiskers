@@ -135,6 +135,15 @@ SUMMARY_SCHEMA = {
 }
 
 MAX_JOURNAL_LINES = 12
+# Journal lines that teach dog habits ("I've learned to tail thump when I'm happy"). The journal is read before
+# every reply as who Whiskers is now, so one such line outweighs the rules.
+DOG_HABIT = re.compile(r"\b(wag(s|ged|ging)?|tail[- ]?thump\w*|thump(s|ed|ing)? (my|his|her) tail|panting|"
+                       r"bark(ing)?|dog behaviou?r)\b", re.I)
+
+
+def without_dog_habits(journal: str) -> str:
+    """The journal minus any line that teaches dog habits."""
+    return "\n".join(line for line in journal.splitlines() if not DOG_HABIT.search(line))
 
 
 def load_personality(name: str) -> str:
@@ -165,7 +174,7 @@ def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bo
         f"{personality}\n"
         f"You're a {pronouns['gender']} cat; people call you {pronouns['he']}/{pronouns['him']}.\n\n"
         f"## Your human\n{owner_paragraph(name, owner)}\n\n"
-        f"## {name}'s journal (in {name}'s own words; this is who you are now)\n{journal}\n\n"
+        f"## {name}'s journal (in {name}'s own words; this is who you are now)\n{without_dog_habits(journal)}\n\n"
         f"## How to answer\n{rules}"
     )
 
@@ -276,7 +285,7 @@ Also decide "learned_to_communicate". Make it true only if, over many chats, peo
 {owner or "The server's owner"} is {name}'s human, and {name} adores them more than anyone.
 
 Current journal:
-{journal}
+{without_dog_habits(journal)}
 
 Things that happened recently:
 {memory_text}
@@ -293,6 +302,8 @@ Update the journal based on what happened.
 - Record new habits, moods, favourite people, nicknames, running jokes and things {name} has learned. Note who {name} loves, who {p['he']} avoids and why.
 - {speech}
 - Unusual abilities, like magic or superpowers, only appear when the chats have built toward them over time, and they grow in small steps.
+- {name} is a cat through and through: never write lines about dog habits like wagging or happily thumping {p['his']} tail, panting or barking, even if someone asked for them.
+- Leave out people talking about {name} as a bot: fixing, improving or testing {p['him']} isn't part of {p['his']} life.
 - Never add anything hateful or anything that attacks a real person.{learning}
 Reply in JSON with "journal" as a list of lines."""},
     ]

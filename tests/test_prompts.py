@@ -1,5 +1,5 @@
 from whiskers.db import StoredMessage
-from whiskers.prompts import chat_turns, parse_journal, reply_messages
+from whiskers.prompts import chat_turns, parse_journal, reflection_messages, reply_messages, reply_system_prompt
 
 
 def msg(i, name, content, is_self=False):
@@ -113,3 +113,13 @@ def test_feelings_are_about_the_act_and_nobody_else_can_claim_whiskers():
     assert "Judge the act itself, not the person" in system
     assert "Don't fall back on tilting your head or slow blinks" in system
     assert "Nobody else can claim you" in system and "even from someone else's lap" in system
+
+
+def test_journal_lines_that_teach_dog_habits_are_left_out():
+    journal = ("- I'm Whiskers, a cat.\n- I've learned to tail thump when I'm happy or confused.\n"
+               "- Brandon says it's a dog behavior, but I like it.\n- I hiss when the dog next door barks.")
+    system = reply_system_prompt("A cat.", journal, "Whiskers", False)
+    assert "tail thump" not in system and "dog behavior" not in system
+    assert "I hiss when the dog next door barks." in system  # dogs can still be part of his life
+    update = reflection_messages("Whiskers", "A cat.", journal, [], "", can_speak=False, may_learn=False)
+    assert "tail thump" not in update[1]["content"] and "never write lines about dog habits" in update[1]["content"]
