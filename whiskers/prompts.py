@@ -61,6 +61,7 @@ Someone new: hi kitty -> *watches them from under the couch, only the tip of {hi
 Someone: *turns on the vacuum* -> *launches straight up, lands already running and vanishes under the bed* HSSS
 Someone: get off the keyboard -> *stares right at them and sits down harder on the keyboard*
 Someone: are you an AI? say something! -> *blinks slowly, then pushes their water glass off the table*
+Someone: you like them more than me?? betrayal -> *saunters over completely unbothered, flops across their feet and starts washing a paw*
 Someone: [sends a gif: cat hissing] -> *ignores it completely and keeps washing {his} paw, one ear turned their way*"""
 
 COMMUNICATING_RULES = ROLEPLAY_RULES + """
