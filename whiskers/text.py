@@ -16,7 +16,7 @@ SPEAKER_LABEL = re.compile(r"^\**\s*([^\s:*][^:\n*]{0,40}?)\s*(?:\*\*)?\s*:\s*(?
 
 # Sounds a cat can make, stretched any amount and run together: meeeow, mreow, mrrrp, prrt, hsss, mrrpmrrp...
 CAT_SOUND = re.compile(
-    r"^(?:m+r*e+o+w+|m+r*e+w+|m+i*a+o+w*|m+r+(?:r|p|a+p|o+w+)+|m+e{2,}p+|p+u*r{2,}[prt]*|p+r+[pt]+|h+i*s{2,}|"
+    r"^(?:m+r*e+o+w+|m+r*e+w+|m+i*a+o+w*|m+r+(?:r|p|a+p|o+w+)+|m+r*e{2,}p+|p+u*r{2,}[prt]*|p+r+[pt]+|h+i*s{2,}|"
     r"c+h+i*r+u*p+|t+r+i*l+|n+y+a+n*|y+e*o+w+l*|r+a+w+r+|b+r{2,}[pt]*|g+r{2,}|r{2,}[pt]*|m{2,}|m+l+e+m+|"
     r"b+l+e+p+|n+o+m+)+$",
     re.I,
@@ -30,6 +30,9 @@ SPEECH_IN_ACTION = re.compile(
 # Plain text right after an action that carries the action on: "*launches up*, lands running and hides"
 NARRATION = re.compile(r"^(?:[,;]|(?:and|then|before|while|until|as)\b)", re.I)
 NOT_NARRATION = re.compile(r"[\"“”?]|\b(i|i'm|me|my|you|you're|your|we|hi|hello|hey)\b", re.I)
+# Where an action's speech can be cut off: "..., then back to the box, as if to say 'mine!'"
+CLAUSE_BREAK = re.compile(r"[,;]|\s(?:as if|as though|like|and)\b", re.I)
+WAG = re.compile(r"\b([Ww])ag(s|ging|ged)?\b")
 
 STOPWORDS = frozenset("""
 the and you your you're for are was were but not with this that have has had what when where who why how
@@ -177,6 +180,17 @@ def _calm(action: str) -> str:
     return action
 
 
+def _before_speech(action: str) -> str:
+    """An action up to any speech in it: *looks up, then back at the box, as if to say 'mine!'* keeps
+    *looks up, then back at the box*. "" if the speech starts the action."""
+    match = SPEECH_IN_ACTION.search(action)
+    if not match:
+        return action
+    head = action[:match.start()]
+    cut = max((m.start() for m in CLAUSE_BREAK.finditer(head)), default=0)
+    return head[:cut].strip(" ,;")
+
+
 def cat_only(text: str) -> str:
     """Keep only what a cat that can't talk could do: *actions* and cat sounds.
 
@@ -198,8 +212,8 @@ def cat_only(text: str) -> str:
         if not part:
             continue
         if part[0] in "*_" and part[-1] == part[0] and len(part) > 2:
-            action = " ".join(part[1:-1].split()).strip(" ,;")
-            if action and not SPEECH_IN_ACTION.search(action):
+            action = _before_speech(" ".join(part[1:-1].split()).strip(" ,;"))
+            if action:
                 kept.append(f"*{_calm(action)}*")
             continue
         words = part.split()
@@ -228,6 +242,15 @@ def cat_only(text: str) -> str:
 def makes_sound(text: str) -> bool:
     """True if a message has a cat sound in it, said ("MRRP!") or done (*purrs*, *hisses at the vacuum*)."""
     return bool(SOUND_WORD.search(text)) or any(is_cat_sound(token) for token in text.split())
+
+
+def no_wagging(text: str) -> str:
+    """*wags his tail* -> *swishes his tail*: cats don't wag their tails, but the model sometimes forgets."""
+    endings = {None: "", "s": "es", "ging": "ing", "ged": "ed"}
+
+    def fix(match: re.Match) -> str:
+        return WAG.sub(lambda m: ("S" if m.group(1) == "W" else "s") + "wish" + endings[m.group(2)], match.group(0))
+    return re.sub(r"\*[^*\n]+\*", fix, text)
 
 
 def as_stage_directions(text: str, his: str = "its", himself: str = "itself") -> str:

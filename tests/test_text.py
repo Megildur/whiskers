@@ -151,6 +151,19 @@ def test_run_together_sounds_and_a_sound_holding_an_actions_asterisk():
     assert cat_only("*MRRP! *dashes to Brandon, tail straight up*") == "MRRP! *dashes to Brandon, tail straight up*"
     assert cat_only("*MEOW! *sits down to think about it* MRRP") == "MEOW! *sits down to think about it* MRRP"
     assert cat_only("*thinks that you are weird* *naps*") == "*naps*"
+    # Speech tacked onto an action is cut off, and the action stays
+    assert cat_only("*looks up at him with wide eyes, then back to the box, as if to say 'what? This is awesome!'* "
+                    "MRRP!") == "*looks up at him with wide eyes, then back to the box* MRRP!"
+    assert cat_only("*stares at Kai and says hi*") == "*stares at Kai*"
+    assert cat_only("*looks at Milo with a chirp* MREEP?") == "*looks at Milo with a chirp* MREEP?"
+
+
+def test_cats_swish_their_tails_instead_of_wagging():
+    from whiskers.text import no_wagging
+
+    assert no_wagging("*wags his tail slowly* MRRP?") == "*swishes his tail slowly* MRRP?"
+    assert no_wagging("*flops into the food, tail wagging*") == "*flops into the food, tail swishing*"
+    assert no_wagging("*Wags tail* and wagons") == "*Swishes tail* and wagons"
 
 
 def test_replies_are_read_from_json_even_while_being_written():

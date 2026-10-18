@@ -84,9 +84,6 @@ def test_system_prompt_names_whiskers_human():
 
     assert "Brandon is your human" in reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
     assert "The person who owns this server is your human" in reply_system_prompt("P", "- j", "Whiskers", False)
-    assert "chosen" not in reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon")
-    two = reply_system_prompt("P", "- j", "Whiskers", False, owner="Brandon", chosen=["Angel", "Milo"])
-    assert "You've also chosen Angel and Milo as your people" in two
 
 
 def test_replies_say_how_the_person_made_whiskers_feel():

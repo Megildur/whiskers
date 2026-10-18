@@ -397,7 +397,8 @@ def test_feelings_add_up_until_whiskers_chooses_someone_and_hurt_undoes_it(cfg, 
         last_turn = brain.llm.calls[-1][0][-1]["content"]
         system = brain.llm.calls[-1][0][0]["content"]
         assert "You've just decided that user5 is one of your people now" in last_turn
-        assert "You've also chosen user5 as your person" in system
+        assert "user5" not in system  # the notes say who's chosen, so the cached system prompt stays the same
+        assert "user5: one of your chosen people" in last_turn
         assert (await brain.db.profile(1, 5)).affection == 62.0  # neutral changes nothing
 
         brain.llm.reply = json.dumps({"scene": "x", "feeling": "hated", "about": "water spray", "reply": "*hisses*"})

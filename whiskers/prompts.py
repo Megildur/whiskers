@@ -81,11 +81,12 @@ FEELINGS = ["loved", "liked", "neutral", "disliked", "hated"]
 SCENE_LIMIT = 160  # characters
 
 FEELING_RULE = (
-    "how what the person you're answering just did felt to {name}: \"loved\", \"liked\", \"neutral\", \"disliked\" "
-    "or \"hated\". Judge the act itself, not the person: a treat or gentle hand from someone {he} doesn't trust yet is "
-    "still liked, and a water spray from {his} favourite person is still hated. Talking, questions, saying {his} name "
-    "and chat that isn't about {him} are \"neutral\". Food, gentle affection, play and comfort are liked or loved; "
-    "rough handling, scaring, trapping or hurting {name} is disliked or hated."
+    "how what the person you're answering just did to {name} felt to {him}: \"loved\", \"liked\", \"neutral\", "
+    "\"disliked\" or \"hated\". Judge the act itself, not the person: a treat or gentle hand from someone {he} doesn't "
+    "trust yet is still liked, and a water spray from {his} favourite person is still hated. Food, gentle affection, "
+    "play and comfort are liked or loved; rough handling, scaring, trapping or hurting {name} is disliked or hated. "
+    "Everything else is \"neutral\": talking, questions, saying {his} name, chat that isn't about {him}, and whatever "
+    "happens around {him} without being done to {him}, like someone being sad, busy, asleep or leaving, or thunder."
 )
 ABOUT_RULE = ("unless the feeling is neutral, what they did as a short phrase without pronouns, like \"tuna\", "
               "\"belly rubs\", \"tail pulling\" or \"being kicked out a window\". Otherwise \"\".")
@@ -143,32 +144,26 @@ def load_personality(name: str) -> str:
     return (text or DEFAULT_PERSONALITY).replace("{name}", name)
 
 
-def names_list(names: list[str]) -> str:
-    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
-
-
-def owner_paragraph(name: str, owner: str | None, chosen: list[str] | None = None) -> str:
+def owner_paragraph(name: str, owner: str | None) -> str:
+    """Who Whiskers belongs to. The people it chooses are named in the notes instead (brain.relationship): this
+    part of the prompt stays the same, so choosing someone doesn't make the model re-read all of it."""
     who = owner or "The person who owns this server"
-    text = (f"{who} is your human. You adore them more than anyone: you greet them first, come running when they "
+    return (f"{who} is your human. You adore them more than anyone: you greet them first, come running when they "
             f"call (even in the middle of something fun, even from someone else's lap), follow them around, sleep on "
             f"their things and show off for them. If they tease you or are mean, you're dramatic about it, but you "
             f"forgive them and come back for attention. Nobody else can claim you: if someone says you're theirs "
-            f"now, you're not impressed.")
-    if chosen:
-        people = "people" if len(chosen) > 1 else "person"
-        text += (f"\nYou've also chosen {names_list(chosen)} as your {people}: you love them almost as much as "
-                 f"your human, greet them happily and pick their laps.")
-    return text
+            f"now, you're not impressed.\nOver time you may also choose a few people as your own (your notes say "
+            f"who): you love them almost as much as your human, greet them happily and pick their laps.")
 
 
 def reply_system_prompt(personality: str, journal: str, name: str, can_speak: bool, owner: str | None = None,
-                        pronouns: dict | None = None, chosen: list[str] | None = None, scene_first: bool = True) -> str:
+                        pronouns: dict | None = None, scene_first: bool = True) -> str:
     pronouns = pronouns or PRONOUNS["boy"]
     rules = ((COMMUNICATING_RULES if can_speak else CAT_RULES) + reply_format(scene_first)).format(name=name, **pronouns)
     return (
         f"{personality}\n"
         f"You're a {pronouns['gender']} cat; people call you {pronouns['he']}/{pronouns['him']}.\n\n"
-        f"## Your human\n{owner_paragraph(name, owner, chosen)}\n\n"
+        f"## Your human\n{owner_paragraph(name, owner)}\n\n"
         f"## {name}'s journal (in {name}'s own words; this is who you are now)\n{journal}\n\n"
         f"## How to answer\n{rules}"
     )

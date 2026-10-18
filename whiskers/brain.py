@@ -25,7 +25,7 @@ from .prompts import (
 )
 from .scheduler import Scheduler
 from .text import (
-    ago, as_stage_directions, cat_only, clean_reply, keywords, makes_sound, narration_as_action, read_reply,
+    ago, as_stage_directions, cat_only, clean_reply, keywords, makes_sound, narration_as_action, no_wagging, read_reply,
     repeated_actions, written_reply,
 )
 
@@ -532,10 +532,8 @@ class Brain:
 
     async def system_prompt(self, guild_id: int, journal: Journal | None = None) -> str:
         journal = journal or await self.db.journal(guild_id)
-        owner_id = self._owners.get(guild_id, 0)
-        chosen = [p.name for p in await self.db.chosen_people(guild_id) if p.user_id != owner_id]
         return reply_system_prompt(self.personality, journal.text, self.name, journal.can_speak,
-                                   await self._owner_name(guild_id), self.pronouns, chosen, self.scene_first)
+                                   await self._owner_name(guild_id), self.pronouns, self.scene_first)
 
     @property
     def _system_in_first_turn(self) -> bool:
@@ -576,8 +574,8 @@ class Brain:
         slot = self._slot(msg.channel_id)
 
         def finish(raw: str) -> str:
-            text = as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],
-                                       self.pronouns["himself"])
+            text = no_wagging(as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],
+                                                  self.pronouns["himself"]))
             if not journal.can_speak:
                 # A message narrated without asterisks ("Whiskers leans in and purrs.") is still an action.
                 text = cat_only(text) or narration_as_action(text, self.name)
@@ -787,8 +785,8 @@ class Brain:
         """A conversation slot that doesn't have the current system prompt cached yet, if any.
 
         Reading the system prompt is the slowest part of a reply that has nothing cached (on a CPU that can
-        be most of a minute), so it's done ahead of time while nobody is talking: after a restart, after
-        the journal changes, and after Whiskers chooses someone new.
+        be a minute or more), so it's done ahead of time while nobody is talking: after a restart and after
+        the journal changes.
         """
         if self.cfg.llm_backend != "managed":
             return None
