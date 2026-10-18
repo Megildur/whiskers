@@ -581,6 +581,22 @@ async def _pass_time(db: Database, guild_id: int, seconds: float) -> None:
         await db.save_feelings(guild_id, person.user_id, person.affection, older, person.chosen)
 
 
+async def _real_chores(bot: WhiskersBot) -> None:
+    """Give Whiskers' real background chores a turn between simulated replies. They only run while nothing
+    else is going on, so without this a long simulation would hold up writing memories of real chat and
+    updating the journal for hours. Like any chore, it's cancelled as soon as someone talks to Whiskers, and
+    it runs before the next reply is read ahead, so it doesn't slow the timed replies."""
+    real = getattr(bot, "brain", None)
+    if real is None:
+        return
+    try:
+        chore = await real.next_chore()
+        if chore:
+            await bot.scheduler.run_chore(chore)
+    except Exception:
+        log.exception("A background chore failed during the simulation; it will be retried")
+
+
 async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name: str, scenes: list[str],
                      on_step: Callable[[Step], Awaitable[None]] | None = None,
                      lines: list[str] | None = None) -> str:
@@ -668,6 +684,8 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                             memory = await asyncio.wait_for(brain.summarize(batch), timeout=REPLY_TIMEOUT)
                         except LLMError as error:
                             log.warning("Simulation: couldn't write a memory: %s", error)
+                await _real_chores(bot)
+                async with bot.scheduler.background_turn():
                     await asyncio.wait_for(brain.prepare_next(msg), timeout=REPLY_TIMEOUT)
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
                 found = checks(reply, raw, replies, ignore=props)

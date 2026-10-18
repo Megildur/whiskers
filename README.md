@@ -119,7 +119,9 @@ Server admins can change who sees the `/whiskers` commands in **Server Settings 
 Whiskers' personality has two layers:
 
 1. **`personality.txt`**: the starting personality, an ordinary cat. Edit it if you want a different starting point.
-2. **The journal**: a short list in Whiskers' own words about who it is now. It starts as "I'm Whiskers, a cat. I can't talk." After every 25 messages Whiskers sends (and at most once every 2 hours), while nobody is waiting for a reply, it rereads recent chats and its memories and updates the journal a little. New habits, favourite people, nicknames and running jokes show up there. Unusual abilities like superpowers only appear once the server has built toward them over time.
+2. **The journal**: a short list in Whiskers' own words about who it is now. It starts as "I'm Whiskers, a cat. I can't talk." After every 25 messages Whiskers sends (and at most once every 2 hours; `REFLECT_EVERY` and `REFLECT_MIN_HOURS` in `.env` change both), it rereads recent chats and its memories and updates the journal a little. New habits, favourite people, nicknames and running jokes show up there. Unusual abilities like superpowers only appear once the server has built toward them over time.
+
+The update waits for a quiet moment: on a CPU it takes a few minutes, and anyone talking to Whiskers interrupts it (it tries again later), so in a very busy server it happens when chat calms down. Simulations step aside for it between replies. `/cat journal` shows when the next update is due, and `/whiskers personality evolve` does one right away.
 
 The journal is the truth for Whiskers: whatever it says, Whiskers does. You can steer it with `/whiskers personality edit`, roll back a change you don't like with `undo`, or start over with `reset`. Each server has its own Whiskers.
 

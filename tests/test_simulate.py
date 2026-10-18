@@ -237,3 +237,24 @@ def test_checks_flag_common_problems():
     # The people and things in the scene aren't Whiskers repeating itself
     earlier = ["*bats the toy toward Tearyu*", "*chases the toy*"]
     assert checks("*pounces on the toy at Tearyu's feet*", "", earlier, ignore={"Tearyu", "toy"}) == []
+
+
+def test_real_chores_still_run_during_a_simulation(cfg, tmp_path):
+    async def go():
+        db = Database(tmp_path / "real.db")
+        await db.connect()
+        ran = []
+
+        async def update_journal():
+            ran.append("journal")
+
+        async def next_chore():
+            return update_journal if not ran else None
+
+        bot = SimpleNamespace(cfg=cfg, db=db, llm=FakeLLM(), scheduler=Scheduler(), user=SimpleNamespace(id=999),
+                              engine=SimpleNamespace(description="fake"), brain=SimpleNamespace(next_chore=next_chore))
+        await run_scenes(bot, 1, 7, "Brandon", ["dinner"])
+        assert ran == ["journal"]  # a long simulation no longer holds up memories and journal updates
+        await db.close()
+
+    asyncio.run(go())

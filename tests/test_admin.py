@@ -43,3 +43,17 @@ def test_roaming_and_home_channels(tmp_path):
         await db.close()
 
     asyncio.run(go())
+
+
+def test_the_journal_says_when_it_next_updates(cfg):
+    from whiskers.cogs.public import next_update
+    from whiskers.db import Journal
+
+    import dataclasses
+    cfg = dataclasses.replace(cfg, reflect_every=15, reflect_min_hours=1.0)
+    assert next_update(Journal("- j", 2, 0.0, since_reflection=9), cfg, now=10_000.0) == \
+        "next update after 6 more messages from Whiskers"
+    waiting = Journal("- j", 2, 0.0, since_reflection=20, reflected_at=10_000.0 - 1200)
+    assert next_update(waiting, cfg, now=10_000.0) == "next update in about 40 min"
+    due = Journal("- j", 2, 0.0, since_reflection=20, reflected_at=0.0)
+    assert next_update(due, cfg, now=10_000.0) == "next update at the next quiet moment"
