@@ -75,7 +75,7 @@ Whiskers only reads and talks where you let it. Nothing happens until you do one
 /whiskers roam roaming:On
 ```
 
-- **Home channels** (`/whiskers channel allow`): Whiskers answers **every message** there, whether it's meant for it or not. When several messages arrive while it's busy, it answers them together in one reply instead of falling behind. You can allow a whole category at once, and threads follow their parent channel.
+- **Home channels** (`/whiskers channel allow`): Whiskers answers **every message** there, whether it's meant for it or not. When several messages arrive while it's busy, even ones that call it by name or reply to it, it answers them together in one reply to the room instead of answering each person minutes late (emoji reactions still come right away). You can allow a whole category at once, and threads follow their parent channel.
 - **Roaming** (`/whiskers roam`): Whiskers can also wander into every other channel it can see. There it answers when someone mentions it, replies to it or says its name, and joins in or reacts on its own when something catches its interest (`/whiskers chattiness` sets how often). `/whiskers channel block` keeps it out of a channel completely.
 
 ## Commands
@@ -232,7 +232,7 @@ Set `LLM_BACKEND=external` in `.env` to use any OpenAI-compatible server instead
 
 - **Whiskers is online but never answers.** Allow a channel with `/whiskers channel allow`, check that Message Content Intent is on, and check that its role can send messages there. `/whiskers status` shows whether the brain is ready.
 - **The server keeps restarting or the AI crashes.** It's probably out of RAM. Use a smaller `MODEL` or a lower `LLM_CONTEXT` (`12288`, then `8192`). The model's own log is in `data/llama-server.log`.
-- **Replies are too slow.** Check that `LLM_CONTEXT` is big enough to keep your busy channels ready (see above), then use a smaller `MODEL` (`nemo-12b` → `llama3.1-8b` → `qwen3-4b`), lower `HISTORY_MESSAGES`, or get more CPU cores. `data/whiskers.log` shows, for every reply, how much of the conversation had to be re-read.
+- **Replies are too slow.** Check that `LLM_CONTEXT` is big enough to keep your busy channels ready (see above), then use a smaller `MODEL` (`nemo-12b` → `llama3.1-8b` → `qwen3-4b`), lower `HISTORY_MESSAGES`, or get more CPU cores. `data/whiskers.log` has a line for every reply: who it answered, how long it waited in the queue, how many words of the prompt had to be read fresh and how many were already cached, how many it wrote, and how long until it was posted. Send that file along when asking for help with speed.
 - **Whiskers forgets what's going on mid-scene or plays it too safe.** Use a bigger `MODEL`. Small models lose track of a scene quickly.
 - **The model download fails.** Restart; the download resumes where it stopped. You can also download the `.gguf` yourself, upload it to `models/` and set `MODEL_PATH`.
 - **Slash commands don't show up.** They're published on startup and can take a minute. Restarting Discord helps.

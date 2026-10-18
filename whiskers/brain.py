@@ -11,7 +11,7 @@ import random
 import re
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from typing import AsyncContextManager, Awaitable, Callable
 
@@ -119,6 +119,7 @@ class Decision:
     # "ambient": Whiskers butts in on its own.
     reply: str | None = None
     reaction: str | None = None
+    to_me: bool = False  # the message mentioned, replied to or named Whiskers
 
 
 @dataclass
@@ -139,6 +140,7 @@ class ReplyJob:
     key: tuple[int, int]
     started: bool = False
     cancelled: bool = False
+    queued_at: float = field(default_factory=time.monotonic)
 
 
 def rule_for(rules: dict[int, ChannelRule], chain: list[int]) -> str | None:
@@ -301,10 +303,13 @@ class Brain:
         talking_to_me = msg.is_dm or msg.mentions_me or msg.replies_to_me or (
             settings.name_trigger and bool(self._name_pattern.search(msg.content))
         )
-        if talking_to_me:
-            decision.reply = "direct"
-        elif home:
+        decision.to_me = bool(talking_to_me)
+        if home:
+            # Its own channel: everything goes into one queue, even messages to Whiskers by name, so when the
+            # chat is busy one reply catches up with all of it instead of answering each person minutes late.
             decision.reply = "home"
+        elif talking_to_me:
+            decision.reply = "direct"
         else:
             chance = chattiness / 100
             if now - self._last_spoke_to.get((msg.channel_id, msg.author_id), 0) < 120:
@@ -418,6 +423,10 @@ class Brain:
                 if job.cancelled or self.already_answered(job):
                     return None
                 job.started = True
+                waited = time.monotonic() - job.queued_at
+                if waited >= 1:
+                    log.info("Answering %s in %s after %.0fs in the queue (%d more waiting).", job.message.author_name,
+                             job.message.channel_id, waited, self.scheduler.pending_replies - 1)
                 posted: list[int | None] = []
                 async with AsyncExitStack() as stack:
                     await stack.enter_async_context(typing())
@@ -543,12 +552,13 @@ class Brain:
             notes.append("You haven't made a sound in a while. A mrrp, meow, purr or hiss would fit if the moment "
                          "calls for one.")
         if mischievous:
-            notes.append("You're in a mischievous mood: as well as reacting, start some trouble of your own this time, "
-                         "unless someone is sad or it's a serious moment.")
+            notes.append("You're in a mischievous mood: react to what just happened first, then add some trouble of "
+                         "your own, unless someone is sad or it's a serious moment.")
         return notes
 
-    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False) -> str:
-        """Which message to answer, and how."""
+    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False, since: list[str] | None = None) -> str:
+        """Which message to answer, and how. `since` names who wrote each message that came in since Whiskers'
+        last one (in a home channel, all of them are answered together)."""
         latest = msg.content if len(msg.content) <= 160 else msg.content[:160] + "..."
         feeling = f'Your "feeling" is about {msg.author_name}.'
         said = "replied to your message" if msg.replies_to_me and not msg.mentions_me else "just said or did"
@@ -560,10 +570,17 @@ class Brain:
         if kind == "direct":
             return (f'{msg.author_name} {said}: "{latest}". React as a cat would, with actions and cat sounds but no '
                     f"human words, carrying on from what's been happening. {feeling}")
-        if kind == "home":  # Whiskers' own channel: people talk to it without saying its name
+        if kind == "home":  # Whiskers' own channel: it answers everything there, called by name or not
             how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
+            room = ""
+            if since and len(since) > 1:
+                names = list(dict.fromkeys(since))
+                names = names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+                room = (f" {len(since)} messages came in since your last one, from {names}: answer the room as a "
+                        f"whole, picking what matters most to you, usually the newest or whatever is aimed at you.")
             return (f'{msg.author_name} {said}: "{latest}". React as a cat would, {how}, carrying on from what\'s '
-                    f"been happening. If it's clearly meant for someone else, do your own cat thing nearby. {feeling}")
+                    f"been happening.{room} If it's clearly meant for someone else, do your own cat thing nearby. "
+                    f"{feeling}")
         if kind == "mischief":  # nobody said anything: Whiskers starts something himself (start_mischief)
             how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
             return (f'It has gone quiet: nobody has said anything for a few minutes (the last was {msg.author_name}: '
@@ -611,10 +628,17 @@ class Brain:
         `ready` is awaited once with the message as soon as the model has written it; the model then
         finishes its private notes (how the person made Whiskers feel) while the message is already posted.
         """
+        begun, posted_at = time.monotonic(), None
         journal = await self.db.journal(msg.guild_id)
         rows = self.window(msg.channel_id, await self.db.recent_messages(msg.channel_id, self.cfg.history_messages))
         if not journal.can_speak:
             rows = self.as_cat(rows)
+        since: list[str] = []  # who wrote each message since Whiskers' last one, oldest first
+        if any(row.is_self for row in rows):
+            for row in reversed(rows):
+                if row.is_self:
+                    break
+                since.insert(0, row.author_name)
         self._read_upto[msg.channel_id] = max([r.message_id for r in rows if not r.is_self] + [msg.message_id])
         system = await self.system_prompt(msg.guild_id, journal)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
@@ -635,7 +659,7 @@ class Brain:
             words = keywords(" ".join([msg.content] + [r.content for r in rows[-4:] if not r.is_self]))
             notes, _, _ = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id, msg.owner_id, words)
             after = []
-        after.append(self.reply_note(msg, kind, journal.can_speak))
+        after.append(self.reply_note(msg, kind, journal.can_speak, since if kind == "home" else None))
         slot = self._slot(msg.channel_id)
 
         def finish(raw: str) -> str:
@@ -683,6 +707,7 @@ class Brain:
                     waiting.cancel()
                 if reply_written.is_set() and not chat.done():
                     text = finish(written_reply(streamed[0]) or "")
+                    posted_at = time.monotonic()
                     await ready(text)
             try:
                 result = await chat
@@ -696,20 +721,25 @@ class Brain:
                 chat.cancel()
         self.llm.last_reply_seconds = result.seconds
         self.llm.remember_prefix(slot, system)
-        log.debug("Reply in %s: read %d prompt tokens (%d cached), wrote %d tokens in %.1fs", msg.channel_id,
-                  result.prompt_tokens, result.cached_tokens, result.tokens, result.seconds)
         parts = read_reply(result.text)
         scene, reply = parts.scene, parts.reply
         if len(scene) >= SCENE_LIMIT - 2:
             scene = re.split(r"[;,.](?=[^;,.]*$)", scene)[0].rstrip(" ;,.") or scene  # cut off mid-word: end it cleanly
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
-            log.debug("Scene in %s: %s", msg.channel_id, scene)
         self._raw[msg.channel_id] = reply
         if text is None:
             text = finish(reply)
             if ready:
+                posted_at = time.monotonic()
                 await ready(text)
+        # One line per reply, so data/whiskers.log shows where the time goes.
+        log.info("Reply to %s in %s (%s%s): read %d new prompt tokens (%d cached), wrote %d; posted after %.1fs, "
+                 "done after %.1fs: %s", msg.author_name, msg.channel_id, kind,
+                 f", {len(since)} new messages" if len(since) > 1 else "", result.prompt_tokens, result.cached_tokens,
+                 result.tokens, (posted_at or time.monotonic()) - begun, time.monotonic() - begun, text)
+        if scene:
+            log.info("Scene in %s: %s", msg.channel_id, scene)
         self._felt.pop(msg.channel_id, None)
         if kind in ("direct", "home"):  # chiming in on other people's chat says little about how they treat Whiskers
             try:
@@ -786,7 +816,7 @@ class Brain:
         self.llm.remember_prefix(slot, system)
         self._prepared[msg.channel_id] = Prepared(notes, people, memories, [r.id for r in rows], system,
                                                   self._part_of_day(time.time())[0])
-        log.debug("Got the next reply in %s ready (read %d prompt tokens in %.1fs).", msg.channel_id,
+        log.info("Got the next reply in %s ready (read %d prompt tokens in %.1fs).", msg.channel_id,
                   result.prompt_tokens, result.seconds)
 
     async def feel(self, msg: Incoming, feeling: str, about: str) -> str | None:

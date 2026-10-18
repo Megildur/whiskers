@@ -103,7 +103,7 @@ class Chat(commands.Cog):
             return
         # A home channel's waiting reply just takes in the new message, so it never counts as too busy.
         if not bot.engine.ready or (decision.reply != "home" and bot.brain.too_busy(decision.reply)):
-            if decision.reply == "direct":
+            if decision.to_me:
                 await self._react(message, "💤")  # asleep (still loading) or too many people waiting
             return
         job = bot.brain.submit(decision.reply, incoming)

@@ -120,7 +120,10 @@ def test_home_channels_answer_every_message_and_batch_them_when_busy(cfg):
     brain = make_brain(cfg)
     quiet = GuildSettings(reactions=False)
     assert brain.decide(incoming("lol", author=2), quiet, 0, home=True).reply == "home"
-    assert brain.decide(incoming("whiskers hi", author=2), quiet, 0, home=True).reply == "direct"
+    # Even messages to Whiskers by name share the channel's one queue at home, so a busy chat is answered together
+    called = brain.decide(incoming("whiskers hi", author=2), quiet, 0, home=True)
+    assert (called.reply, called.to_me) == ("home", True)
+    assert brain.decide(incoming("whiskers hi", author=2), quiet, 0).reply == "direct"
     assert brain.decide(incoming("lol", author=2), quiet, 0).reply is None  # elsewhere it only chimes in sometimes
 
     first = brain.submit("home", incoming("lol", author=2, message_id=10))
@@ -531,6 +534,29 @@ def test_now_and_then_whiskers_is_nudged_to_start_something(cfg, tmp_path):
         await brain.db.update_guild_settings(1, mischief="often")
         notes, _, _ = await brain._context(1, 10, rows, 1, 0, [])
         assert not any("mischievous mood" in n for n in notes)  # only now and then
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_a_busy_home_channel_is_answered_as_a_room(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, json.dumps({"scene": "busy", "reply": "*flops over in the middle of everyone*"}))
+        await brain.db.connect()
+        first = incoming("whiskers do you love me?", author=5, message_id=600, owner_id=8)
+        await brain.observe(first, GuildSettings(), 0, home=True)
+        await brain.record_own_message(first, 601, "*pounces on user5's hand*", 1001.0)
+        for i, (author, text) in enumerate([(6, "was this rejection 💀"), (5, "more than Brandon?"),
+                                            (6, "ik you love me")]):
+            msg = incoming(text, author=author, message_id=610 + i, owner_id=8)
+            await brain.observe(msg, GuildSettings(), 0, home=True)
+        await brain.compose(msg, "home")
+        note = brain.llm.calls[-1][0][-1]["content"]
+        assert '3 messages came in since your last one, from user6 and user5: answer the room as a whole' in note
+        assert 'user6 just said or did: "ik you love me"' in note
         await brain.db.close()
 
     asyncio.run(go())
