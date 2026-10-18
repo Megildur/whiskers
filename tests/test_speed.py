@@ -3,6 +3,7 @@ import asyncio
 import dataclasses
 import json
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 from fakes import ScriptedLLM
 from whiskers.brain import Brain, Incoming
@@ -250,5 +251,72 @@ def test_a_reply_narrated_without_asterisks_is_kept_as_an_action(cfg, tmp_path):
         await brain.observe(msg, GuildSettings(), 0)
         assert await brain.compose(msg, "direct") == "*leans into Brandon's hand and purrs*"
         await brain.db.close()
+
+    asyncio.run(go())
+
+
+class SlotMover(ScriptedLLM):
+    """Records slot saves and restores instead of asking a llama-server, and keeps the files in a folder."""
+
+    def __init__(self, slot_dir, keep=2):
+        super().__init__(slots=2)
+        self.engine.slot_dir = slot_dir
+        self.cfg = SimpleNamespace(llm_saved_channels=keep)
+        self.actions = []
+
+    async def _slot_action(self, slot, action, filename):
+        self.actions.append((slot, action, filename))
+        if action == "save":
+            (self.engine.slot_dir / filename).write_text("kv")
+        return {"n_saved": 100, "n_restored": 100, "seconds": 0.1}
+
+
+def test_channels_that_lose_their_slot_are_saved_and_restored(tmp_path):
+    async def go():
+        llm = SlotMover(tmp_path)
+        assert await llm.ready_slot(1, "SYS") == 0 and llm.actions == []  # nothing to copy yet: read it
+        llm.remember_prefix(0, "SYS")
+        assert await llm.ready_slot(2, "SYS") == 1  # a new channel gets the prompt copied, not re-read
+        assert llm.actions == [(0, "save", "system.bin"), (1, "restore", "system.bin")]
+        llm.actions.clear()
+
+        assert await llm.ready_slot(3, "SYS") == 0  # channel 1 is pushed out: it's saved first
+        assert llm.actions == [(0, "save", "chat-1.bin")]
+        llm.actions.clear()
+        assert await llm.ready_slot(1, "SYS") == 1  # and comes back from disk, pushing out channel 2
+        assert llm.actions == [(1, "save", "chat-2.bin"), (1, "restore", "chat-1.bin")]
+        assert not (tmp_path / "chat-1.bin").exists() and (tmp_path / "chat-2.bin").exists()
+        llm.actions.clear()
+        assert await llm.ready_slot(1, "SYS") == 1 and llm.actions == []  # still there: nothing to do
+
+        llm.engine.starts += 1  # a restarted server has nothing saved
+        assert await llm.ready_slot(2, "SYS") == 0 and llm.actions == []
+
+    asyncio.run(go())
+
+
+def test_only_a_few_channels_are_kept_on_disk(tmp_path):
+    async def go():
+        llm = SlotMover(tmp_path, keep=1)
+        for channel in (1, 2):
+            await llm.ready_slot(channel, "SYS")
+            llm.remember_prefix(llm.slot_for(channel), "SYS")
+        await llm.ready_slot(3, "SYS")  # saves channel 1
+        await llm.ready_slot(4, "SYS")  # saves channel 2 and forgets channel 1 to stay within one file
+        assert sorted(p.name for p in tmp_path.glob("chat-*")) == ["chat-2.bin"]
+
+    asyncio.run(go())
+
+
+def test_warming_up_copies_the_prompt_when_another_slot_has_it(cfg, tmp_path):
+    async def go():
+        llm = SlotMover(tmp_path)
+        brain = brain_for(cfg, tmp_path, Model())
+        brain.llm = llm
+        llm.slot_for(1)
+        llm.remember_prefix(0, "SYS")
+        await brain._warm_up(1, "SYS")
+        assert llm.actions == [(0, "save", "system.bin"), (1, "restore", "system.bin")]
+        assert llm.cached_prefix(1) == "SYS"
 
     asyncio.run(go())

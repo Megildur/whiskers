@@ -660,7 +660,7 @@ class Brain:
             notes, _, _ = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id, msg.owner_id, words)
             after = []
         after.append(self.reply_note(msg, kind, journal.can_speak, since if kind == "home" else None))
-        slot = self._slot(msg.channel_id)
+        slot = await self._ready_slot(msg.channel_id, system)
 
         def finish(raw: str) -> str:
             text = no_wagging(as_stage_directions(clean_reply(raw, self.name, names), self.pronouns["his"],
@@ -734,10 +734,13 @@ class Brain:
                 posted_at = time.monotonic()
                 await ready(text)
         # One line per reply, so data/whiskers.log shows where the time goes.
-        log.info("Reply to %s in %s (%s%s): read %d new prompt tokens (%d cached), wrote %d; posted after %.1fs, "
+        speeds = ""
+        if self.llm.prompt_tokens_per_second and self.llm.tokens_per_second:
+            speeds = f" (reading {self.llm.prompt_tokens_per_second:.0f}/s, writing {self.llm.tokens_per_second:.1f}/s)"
+        log.info("Reply to %s in %s (%s%s): read %d new prompt tokens (%d cached), wrote %d%s; posted after %.1fs, "
                  "done after %.1fs: %s", msg.author_name, msg.channel_id, kind,
                  f", {len(since)} new messages" if len(since) > 1 else "", result.prompt_tokens, result.cached_tokens,
-                 result.tokens, (posted_at or time.monotonic()) - begun, time.monotonic() - begun, text)
+                 result.tokens, speeds, (posted_at or time.monotonic()) - begun, time.monotonic() - begun, text)
         if scene:
             log.info("Scene in %s: %s", msg.channel_id, scene)
         self._felt.pop(msg.channel_id, None)
@@ -748,8 +751,11 @@ class Brain:
                 log.exception("Couldn't record how %s made Whiskers feel", msg.author_name)
         return text
 
-    def _slot(self, channel_id: int) -> int | None:
-        return self.llm.slot_for(channel_id if self.slot_key is None else self.slot_key)
+    async def _ready_slot(self, channel_id: int, system: str) -> int | None:
+        """This channel's cache slot, with as much of the prompt as possible already loaded."""
+        if self.slot_key is not None:
+            return self.llm.slot_for(self.slot_key)
+        return await self.llm.ready_slot(channel_id, system)
 
     async def _context(self, guild_id: int, channel_id: int, rows: list[StoredMessage], author_id: int,
                        owner_id: int, words: list[str]) -> tuple[list[str], set[int], set[int]]:
@@ -810,7 +816,7 @@ class Brain:
         words = keywords(" ".join(r.content for r in rows[-5:] if not r.is_self))
         notes, people, memories = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id,
                                                       msg.owner_id, words)
-        slot = self._slot(msg.channel_id)
+        slot = await self._ready_slot(msg.channel_id, system)
         result = await self.llm.chat(prefill_messages(system, rows, notes, self.name, self._system_in_first_turn),
                                      max_tokens=1, temperature=0.0, slot=slot)
         self.llm.remember_prefix(slot, system)
@@ -899,9 +905,12 @@ class Brain:
         return None
 
     async def _warm_up(self, slot: int, system: str) -> None:
+        if await self.llm.load_system(slot, system):  # copied from another slot in a second or two
+            return
         messages = reply_messages(system, [], [], self.name, system_in_first_turn=self._system_in_first_turn)
         result = await self.llm.chat(messages, max_tokens=1, temperature=0.0, slot=slot)
         self.llm.remember_prefix(slot, system)
+        await self.llm.save_system(slot, system)  # for the other slots
         log.info("Conversation slot %d is warmed up (read %d prompt tokens in %.0fs).", slot, result.prompt_tokens,
                  result.seconds)
 

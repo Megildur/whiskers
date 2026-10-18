@@ -44,34 +44,139 @@ class LLMClient:
         self._starts = 0
         self._slots: dict[object, int] = {}  # conversation -> its llama-server slot, least recently used first
         self._prefixes: dict[int, str] = {}  # slot -> the system prompt it has cached
+        # Conversations that lost their slot, saved to disk: conversation -> (file, the system prompt in it),
+        # least recently saved first. And a saved copy of a slot holding the current system prompt.
+        self._saved: dict[object, tuple[str, str]] = {}
+        self._system_file: tuple[str, str] | None = None  # (system prompt, file)
 
     # ---- llama-server slots: one per conversation, so each keeps its own cache ----
 
     def _check_restart(self) -> None:
-        if self.engine.starts != self._starts:  # a fresh server has nothing cached
+        if self.engine.starts != self._starts:  # a fresh server has nothing cached (and no saved slots)
             self._starts = self.engine.starts
             self._slots.clear()
             self._prefixes.clear()
+            self._saved.clear()
+            self._system_file = None
 
     def conversation_slots(self) -> list[int]:
         return list(range(self.engine.chat_slots))
 
-    def slot_for(self, conversation: object) -> int | None:
-        """The slot a conversation (a channel, or CHORES) uses. None lets the server choose."""
+    def _assign(self, conversation: object) -> tuple[int | None, object | None, bool]:
+        """(slot, the conversation it was taken from or None, whether the slot is new to this conversation)."""
         self._check_restart()
         if conversation == CHORES:
-            return self.engine.chore_slot
+            return self.engine.chore_slot, None, False
         count = self.engine.chat_slots
         if not count:
-            return None
+            return None, None, False
         if conversation in self._slots:
-            slot = self._slots.pop(conversation)
-        else:
-            used = set(self._slots.values())
-            free = [s for s in range(count) if s not in used]
-            slot = free[0] if free else self._slots.pop(next(iter(self._slots)))  # take the least recently used
+            self._slots[conversation] = self._slots.pop(conversation)  # now the most recently used
+            return self._slots[conversation], None, False
+        used = set(self._slots.values())
+        free = [s for s in range(count) if s not in used]
+        evicted = None
+        if free:
+            slot = free[0]
+        else:  # take the least recently used conversation's slot
+            evicted = next(iter(self._slots))
+            slot = self._slots.pop(evicted)
         self._slots[conversation] = slot
+        return slot, evicted, True
+
+    def slot_for(self, conversation: object) -> int | None:
+        """The slot a conversation (a channel, or CHORES) uses. None lets the server choose."""
+        return self._assign(conversation)[0]
+
+    @property
+    def can_save_slots(self) -> bool:
+        return getattr(self.engine, "slot_dir", None) is not None
+
+    async def ready_slot(self, conversation: object, system: str) -> int | None:
+        """The slot for a conversation, with as much of its prompt already loaded as possible.
+
+        Reading a prompt from scratch is the slowest part of a reply on a CPU: a whole conversation takes one
+        or two minutes. Saving a slot to disk and restoring it takes a second or two, so when a channel loses
+        its slot to another one it's saved, and it's restored when it comes back. A slot that doesn't have the
+        current system prompt yet (a channel's first reply, a new journal) gets a copy from one that does.
+        """
+        slot, evicted, new = self._assign(conversation)
+        if slot is None or not self.can_save_slots or conversation == CHORES:
+            return slot
+        try:
+            if evicted is not None and self._prefixes.get(slot):
+                await self._save_conversation(evicted, slot)
+            if new and conversation in self._saved:
+                filename, prefix = self._saved.pop(conversation)
+                result = await self._slot_action(slot, "restore", filename)
+                self._prefixes[slot] = prefix
+                self._delete(filename)
+                log.info("Restored channel %s's conversation into slot %d (%s tokens in %.1fs).", conversation,
+                         slot, result.get("n_restored"), result.get("seconds", 0))
+                return slot
+            if self._prefixes.get(slot) != system:
+                await self.load_system(slot, system)
+        except LLMError as error:
+            log.warning("Couldn't move a conversation in or out of slot %d: %s", slot, error)
         return slot
+
+    async def load_system(self, slot: int, system: str) -> bool:
+        """Copy the current system prompt into a slot from a saved copy, or from another slot that has it.
+        False if none has it yet (then it has to be read the slow way)."""
+        self._check_restart()
+        if not self.can_save_slots:
+            return False
+        if not (self._system_file and self._system_file[0] == system):
+            donor = next((s for s, prefix in self._prefixes.items() if prefix == system and s != slot), None)
+            if donor is None:
+                return False
+            await self.save_system(donor, system)
+        result = await self._slot_action(slot, "restore", self._system_file[1])
+        self._prefixes[slot] = system
+        log.info("Copied Whiskers' prompt into slot %d (%s tokens in %.1fs).", slot, result.get("n_restored"),
+                 result.get("seconds", 0))
+        return True
+
+    async def save_system(self, slot: int, system: str) -> None:
+        """Keep a copy of a slot that has the current system prompt, for slots that don't have it yet."""
+        if self.can_save_slots and slot is not None:
+            await self._slot_action(slot, "save", "system.bin")
+            self._system_file = (system, "system.bin")
+
+    async def _save_conversation(self, conversation: object, slot: int) -> None:
+        keep = max(0, getattr(self.cfg, "llm_saved_channels", 0))
+        if not keep:
+            return
+        filename = f"chat-{conversation}.bin"
+        result = await self._slot_action(slot, "save", filename)
+        self._saved.pop(conversation, None)
+        self._saved[conversation] = (filename, self._prefixes.get(slot, ""))
+        while len(self._saved) > keep:  # forget the channel that's been away longest
+            old = next(iter(self._saved))
+            self._delete(self._saved.pop(old)[0])
+        log.info("Saved channel %s's conversation to make room in slot %d (%s tokens in %.1fs).", conversation,
+                 slot, result.get("n_saved"), result.get("seconds", 0))
+
+    def _delete(self, filename: str) -> None:
+        try:
+            (self.engine.slot_dir / filename).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    async def _slot_action(self, slot: int, action: str, filename: str) -> dict:
+        """Save a llama-server slot to a file in the engine's slot folder, or restore one from it."""
+        started = time.monotonic()
+        url = f"{self.engine.base_url.removesuffix('/v1')}/slots/{slot}?action={action}"
+        try:
+            async with self._get_session().post(url, json={"filename": filename},
+                                                timeout=aiohttp.ClientTimeout(total=120)) as resp:
+                if resp.status != 200:
+                    raise LLMError(f"{action} failed: HTTP {resp.status}: {(await resp.text())[:200]}")
+                result = await resp.json()
+        except (aiohttp.ClientError, asyncio.TimeoutError) as error:
+            raise LLMError(f"{action} failed: {error}") from error
+        result["seconds"] = time.monotonic() - started
+        return result
 
     def cached_prefix(self, slot: int) -> str | None:
         self._check_restart()

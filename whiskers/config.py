@@ -139,6 +139,8 @@ class Config:
     llm_context: int
     llm_slots: int
     llm_cache_ram_mb: int
+    llm_saved_channels: int  # channels' conversations kept on disk when they lose their slot; 0 = never
+    llm_flash_attn: str  # "auto", "on" or "off"
     llm_port: int
     llm_base_url: str
     llm_model_name: str
@@ -195,6 +197,8 @@ def load_config() -> Config:
         llm_context=_int("LLM_CONTEXT", 8192),
         llm_slots=_int("LLM_SLOTS", 2),
         llm_cache_ram_mb=_int("LLM_CACHE_RAM_MB", 512),
+        llm_saved_channels=max(0, _int("LLM_SAVED_CHANNELS", 4)),
+        llm_flash_attn=_str("LLM_FLASH_ATTN", "auto").lower(),
         llm_port=_int("LLM_PORT", 0),
         llm_base_url=_str("LLM_BASE_URL", "http://127.0.0.1:11434/v1").rstrip("/"),
         llm_model_name=_str("LLM_MODEL_NAME"),

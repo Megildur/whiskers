@@ -65,6 +65,7 @@ class Engine:
     threads: int | None = None
     chat_slots: int = 0  # llama-server slots kept for conversations; 0 lets the server choose
     chore_slot: int | None = None  # a slot only background chores use
+    slot_dir: Path | None = None  # where llama-server saves and restores slots (LLMClient.ready_slot)
     starts: int = 0  # bumped every time the server (and so its cache) starts fresh
 
     async def start(self) -> None:
@@ -259,6 +260,17 @@ class ManagedEngine(Engine):
             ("--cache-reuse", ["256"]),  # reuse cached chat history even after the window moves
             ("--cache-ram", [str(self.cfg.llm_cache_ram_mb)]),  # default is 8 GB, far too much here
         ]
+        if self.cfg.llm_flash_attn in ("on", "off"):  # on a CPU, "on" reads prompts faster but writes slower
+            optional.append(("--flash-attn", [self.cfg.llm_flash_attn]))
+        # Slots can be saved to disk and restored: a channel that loses its slot to another one comes back in
+        # a second or two instead of re-reading its whole conversation (see LLMClient.ready_slot).
+        slot_dir = self.cfg.data_dir / "slots"
+        shutil.rmtree(slot_dir, ignore_errors=True)  # saved for a different server start: possibly another model
+        self.slot_dir = None
+        if self.cfg.llm_saved_channels and "--slot-save-path" in self._help_text:
+            slot_dir.mkdir(parents=True, exist_ok=True)
+            optional.append(("--slot-save-path", [str(slot_dir)]))
+            self.slot_dir = slot_dir
         if self.cfg.preset and self.cfg.preset.thinking:
             optional += [("--chat-template-kwargs", ['{"enable_thinking":false}']), ("--reasoning-budget", ["0"])]
         for flag, values in optional:
