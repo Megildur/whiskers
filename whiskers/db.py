@@ -48,7 +48,8 @@ CREATE TABLE IF NOT EXISTS messages (
     is_self INTEGER NOT NULL DEFAULT 0,
     content TEXT NOT NULL,
     created_at REAL NOT NULL,
-    summarized INTEGER NOT NULL DEFAULT 0
+    summarized INTEGER NOT NULL DEFAULT 0,
+    unprompted INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel_id, id);
 CREATE INDEX IF NOT EXISTS messages_guild ON messages (guild_id, id);
@@ -111,6 +112,9 @@ ADDED_COLUMNS = {
     "guild_settings": {
         "owner_id": "INTEGER NOT NULL DEFAULT 0",
         "mischief": "TEXT NOT NULL DEFAULT 'sometimes'",
+    },
+    "messages": {
+        "unprompted": "INTEGER NOT NULL DEFAULT 0",  # Whiskers started something on his own (Brain.start_mischief)
     },
     "profiles": {
         "affection": "REAL NOT NULL DEFAULT 0",
@@ -324,13 +328,31 @@ class Database:
     # ---- messages ----
 
     async def add_message(self, guild_id: int, channel_id: int, message_id: int, author_id: int, author_name: str,
-                          content: str, created_at: float, is_self: bool = False) -> None:
+                          content: str, created_at: float, is_self: bool = False, unprompted: bool = False) -> None:
         await self.conn.execute(
-            "INSERT OR IGNORE INTO messages (guild_id, channel_id, message_id, author_id, author_name, is_self, content, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (guild_id, channel_id, message_id, author_id, author_name, int(is_self), content[:1000], created_at),
+            "INSERT OR IGNORE INTO messages (guild_id, channel_id, message_id, author_id, author_name, is_self, content, "
+            "created_at, unprompted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (guild_id, channel_id, message_id, author_id, author_name, int(is_self), content[:1000], created_at,
+             int(unprompted)),
         )
         await self.conn.commit()
+
+    async def last_unprompted(self, channel_id: int) -> tuple[float, float | None] | None:
+        """When Whiskers last posted on his own in a channel, and when someone first spoke after that (None if
+        nobody has yet). None if he never has, as far as the stored chat goes."""
+        async with self.conn.execute(
+            "SELECT id, created_at FROM messages WHERE channel_id = ? AND unprompted = 1 ORDER BY id DESC LIMIT 1",
+            (channel_id,),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            return None
+        async with self.conn.execute(
+            "SELECT MIN(created_at) AS at FROM messages WHERE channel_id = ? AND id > ? AND is_self = 0",
+            (channel_id, row["id"]),
+        ) as cur:
+            answered = await cur.fetchone()
+        return row["created_at"], answered["at"] if answered else None
 
     async def update_message(self, message_id: int, content: str) -> None:
         await self.conn.execute("UPDATE messages SET content = ? WHERE message_id = ?", (content[:1000], message_id))

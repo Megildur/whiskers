@@ -675,7 +675,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                         brain.compose(msg, kind, ready=ready), timeout=REPLY_TIMEOUT,
                     )
                 seconds = (posted[0] if posted else time.monotonic()) - started
-                await brain.record_own_message(msg, next(ids), reply, time.time())
+                await brain.record_own_message(msg, next(ids), reply, time.time(), unprompted=kind == "mischief")
                 memory = None
                 async with bot.scheduler.background_turn():  # as in real chat while people type; not timed
                     batch = await db.summary_batch(channel_id=channel_id)

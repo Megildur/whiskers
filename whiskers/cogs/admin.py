@@ -32,8 +32,8 @@ UNSET_RULE = {
 SPEECH_NAMES = {False: "cat sounds and actions only", True: "has learned to communicate"}
 MISCHIEF_NAMES = {
     "off": "he only reacts",
-    "sometimes": "now and then, at most every 3 hours in a quiet channel",
-    "often": "a lot, up to once an hour in a quiet channel",
+    "sometimes": "now and then, at most every 3 hours in a quiet channel (6 if ignored)",
+    "often": "a lot, up to once an hour in a quiet channel (2 if ignored)",
 }
 
 

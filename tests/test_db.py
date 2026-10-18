@@ -131,6 +131,10 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
                 "facts TEXT NOT NULL DEFAULT '[]', chats INTEGER NOT NULL DEFAULT 0, first_seen REAL NOT NULL, "
                 "last_seen REAL NOT NULL, PRIMARY KEY (guild_id, user_id))")
     old.execute("INSERT INTO profiles (guild_id, user_id, name, chats, first_seen, last_seen) VALUES (1, 5, 'Angel', 9, 1, 2)")
+    old.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, guild_id INTEGER NOT NULL, channel_id "
+                "INTEGER NOT NULL, message_id INTEGER NOT NULL UNIQUE, author_id INTEGER NOT NULL, author_name TEXT NOT "
+                "NULL, is_self INTEGER NOT NULL DEFAULT 0, content TEXT NOT NULL, created_at REAL NOT NULL, summarized "
+                "INTEGER NOT NULL DEFAULT 0)")
     old.commit()
     old.close()
 
@@ -143,6 +147,8 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
         assert (settings.chattiness, settings.owner_id, settings.mischief) == (12, 0, "sometimes")
         angel = await db.profile(1, 5)
         assert (angel.chats, angel.affection, angel.feelings, angel.chosen) == (9, 0.0, [], False)
+        await db.add_message(1, 10, 5, 99, "Whiskers", "*knocks a mug over*", 100.0, is_self=True, unprompted=True)
+        assert await db.last_unprompted(10) == (100.0, None)
         await db.close()
 
     run(go())

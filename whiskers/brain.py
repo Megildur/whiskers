@@ -96,6 +96,7 @@ MISCHIEF = {
 }
 MISCHIEF_QUIET = 5 * 60  # Whiskers starts something when nobody has said anything for this long...
 MISCHIEF_AROUND = 45 * 60  # ...but someone was talking within this, so there's somebody to bother
+MISCHIEF_IGNORED = 20 * 60  # nobody said anything this long after one: the next waits twice the usual gap
 
 
 @dataclass
@@ -254,8 +255,7 @@ class Brain:
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
         self._chore_failures: dict[int, int] = {}
-        self._mischief_at: dict[int, float] = {}  # channel -> when Whiskers last started something there
-        self._mischief_after: dict[int, int] = {}  # channel -> the newest message it had seen then
+        self._mischief_at: dict[int, float] = {}  # channel -> when Whiskers last tried starting something there
         try:
             from zoneinfo import ZoneInfo
 
@@ -386,25 +386,35 @@ class Brain:
                              now: float | None = None) -> ReplyJob | None:
         """Sometimes, when a home channel goes quiet while people are still around, Whiskers starts some
         trouble on his own instead of waiting to be talked to. Checked about once a minute; returns the
-        job to post, or None. He never starts two things in a row without someone answering in between."""
+        job to post, or None.
+
+        So he never fills a quiet channel with antics: he never starts two things in a row without someone
+        saying something in between, waits the level's gap after each one, and twice as long after one that
+        nobody answered for a while. That's read from the stored chat, so a restart doesn't reset it."""
         setting = MISCHIEF.get(level)
         if setting is None or self.scheduler.busy or any(key[0] == channel_id for key in self._jobs):
             return None
         now = time.time() if now is None else now
         if now - self._mischief_at.get(channel_id, float("-inf")) < setting.gap:
             return None
+        previous = await self.db.last_unprompted(channel_id)
+        if previous:
+            posted_at, answered_at = previous
+            if answered_at is None:
+                return None  # nobody has said anything since his last one
+            ignored = answered_at - posted_at > MISCHIEF_IGNORED
+            if now - posted_at < setting.gap * (2 if ignored else 1):
+                return None
         rows = await self.db.recent_messages(channel_id, 20)
         people = [row for row in rows if not row.is_self]
         if not people:
             return None
         last = people[-1]
-        if (now - rows[-1].created_at < MISCHIEF_QUIET or now - last.created_at > MISCHIEF_AROUND
-                or self._mischief_after.get(channel_id, 0) >= last.message_id):
+        if now - rows[-1].created_at < MISCHIEF_QUIET or now - last.created_at > MISCHIEF_AROUND:
             return None
         if self.rng.random() >= setting.chance:
             return None
         self._mischief_at[channel_id] = now
-        self._mischief_after[channel_id] = last.message_id
         msg = Incoming(last.message_id, guild_id, channel_id, last.author_id, last.author_name, last.content,
                        last.created_at, owner_id=owner_id)
         job = ReplyJob("mischief", msg, (channel_id, 0))
@@ -439,7 +449,8 @@ class Brain:
                     text = await self.compose(job.message, job.kind, ready=post)
                 message_id = posted[0] if posted else None
                 if message_id is not None:
-                    await self.record_own_message(job.message, message_id, text, time.time())
+                    await self.record_own_message(job.message, message_id, text, time.time(),
+                                                  unprompted=job.kind == "mischief")
                     channel = job.message.channel_id
                     self._seen[channel] = max(self._seen.get(channel, 0),
                                               self._read_upto.get(channel, job.message.message_id))
@@ -467,9 +478,10 @@ class Brain:
             return False
         return self._last_own.get(msg.channel_id, 0) > msg.message_id
 
-    async def record_own_message(self, msg: Incoming, message_id: int, text: str, created_at: float) -> None:
+    async def record_own_message(self, msg: Incoming, message_id: int, text: str, created_at: float,
+                                 unprompted: bool = False) -> None:
         await self.db.add_message(msg.guild_id, msg.channel_id, message_id, self.user_id, self.name, text,
-                                  created_at, is_self=True)
+                                  created_at, is_self=True, unprompted=unprompted)
         now = time.time()
         self._last_spoke[msg.channel_id] = now
         self._last_spoke_to[(msg.channel_id, msg.author_id)] = now

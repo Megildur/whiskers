@@ -465,7 +465,7 @@ def test_whiskers_starts_mischief_when_a_home_channel_goes_quiet(cfg, tmp_path):
     import json
     from contextlib import asynccontextmanager
 
-    from whiskers.brain import MISCHIEF, MISCHIEF_AROUND, MISCHIEF_QUIET
+    from whiskers.brain import MISCHIEF_AROUND, MISCHIEF_QUIET
 
     async def go():
         brain = brain_with(cfg, tmp_path, json.dumps({"scene": "bored", "reply": "*steals Brandon's sock and runs*"}))
@@ -497,13 +497,7 @@ def test_whiskers_starts_mischief_when_a_home_channel_goes_quiet(cfg, tmp_path):
         note = next(call[0][-1]["content"] for call in brain.llm.calls if call[1].get("json_schema"))
         assert "It has gone quiet" in note and "start some mischief of your own" in note and "user8" in note
         assert (await brain.db.profile(1, 8)).affection == 0  # nobody did anything to him
-        # Not again until someone has said something, and not before the gap is over
-        later = said + MISCHIEF_QUIET + 60 + MISCHIEF["sometimes"].gap + 60
-        assert await brain.start_mischief(1, 10, "sometimes", 8, now=later) is None
-        reply = incoming("lmao what", author=8, message_id=710, owner_id=8)
-        reply.created_at = later - MISCHIEF_QUIET - 60
-        await brain.observe(reply, GuildSettings(), 0, home=True)
-        assert (await brain.start_mischief(1, 10, "sometimes", 8, now=later)).message.message_id == 710
+        assert (await brain.db.last_unprompted(10))[1] is None  # remembered as his own idea, not yet answered
         await brain.db.close()
 
     asyncio.run(go())
@@ -558,5 +552,54 @@ def test_a_busy_home_channel_is_answered_as_a_room(cfg, tmp_path):
         assert '3 messages came in since your last one, from user6 and user5: answer the room as a whole' in note
         assert 'user6 just said or did: "ik you love me"' in note
         await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_mischief_waits_for_an_answer_and_even_longer_when_ignored(cfg, tmp_path):
+    import asyncio
+
+    from whiskers.brain import MISCHIEF
+
+    gap = MISCHIEF["sometimes"].gap
+
+    async def go():
+        db = brain_with(cfg, tmp_path, "").db
+        await db.connect()
+
+        def fresh():  # a new Brain each time, as after a restart: only the stored chat says what happened
+            return Brain(cfg, db=db, llm=FakeLLM(""), scheduler=Scheduler(), rng=EagerRandom())
+
+        async def human(channel, mid, at):
+            await db.add_message(1, channel, mid, 8, "user8", "hi", at)
+
+        async def mischief(channel, mid, at):
+            await db.add_message(1, channel, mid, 99, "Whiskers", "*knocks a mug off the desk*", at, is_self=True,
+                                 unprompted=True)
+
+        base = 1_000_000.0
+        # Channel 10: nobody answers his antics, so there's no second one, however long it stays quiet
+        await human(10, 1, base)
+        await mischief(10, 2, base + 600)
+        assert await fresh().start_mischief(1, 10, "often", now=base + 1200) is None
+
+        # Channel 20: answered within minutes, so the usual gap
+        await human(20, 11, base)
+        await mischief(20, 12, base + 600)
+        await human(20, 13, base + 900)
+        await human(20, 14, base + 600 + gap - 900)  # people chatting again later
+        assert await fresh().start_mischief(1, 20, "sometimes", now=base + 600 + gap - 300) is None  # too soon
+        await human(20, 15, base + 600 + gap - 600)
+        assert await fresh().start_mischief(1, 20, "sometimes", now=base + 600 + gap + 60) is not None
+
+        # Channel 30: nobody said anything for half an hour after it: the next one waits twice as long
+        await human(30, 21, base)
+        await mischief(30, 22, base + 600)
+        await human(30, 23, base + 600 + 1800)
+        await human(30, 24, base + 600 + gap)
+        assert await fresh().start_mischief(1, 30, "sometimes", now=base + 600 + gap + 360) is None
+        await human(30, 25, base + 600 + 2 * gap)
+        assert await fresh().start_mischief(1, 30, "sometimes", now=base + 600 + 2 * gap + 360) is not None
+        await db.close()
 
     asyncio.run(go())
