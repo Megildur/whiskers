@@ -4,11 +4,12 @@ Real chats run for dozens of messages, and some problems only show up that far i
 because his own recent messages are quiet, falling into habits, staying in one mood for too long, losing
 the thread of a game, or letting an old memory wander into the scene. The other packs' scenes are a few
 replies long and start fresh, so they can't catch any of that. Each scene here is one continuous chat of
-37 to 46 replies, modelled on what really happens in Whiskers' home channel, and memories are written
+38 to 48 replies, modelled on what really happens in Whiskers' home channel, and memories are written
 partway through as they would be in real chat.
 
 The step format is described in simulate.py. "reply" lines reply to Whiskers' last message, as people do
-in a long roleplay; "chime" lines aren't meant for him, but he answers them, as in a home channel.
+in a long roleplay; "chime" lines aren't meant for him, but he answers them, as in a home channel; and
+"quiet" steps are lulls where nobody says anything and Whiskers starts some mischief himself.
 """
 from __future__ import annotations
 
@@ -59,6 +60,8 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("regular", "*quietly pulls the laser back out*", "chime"),
             ("owner", "milo let him rest 😭", "chime"),
             ("owner", "*pets you while you lie there*", "reply"),
+            ("quiet", "Everyone goes quiet for a while"),
+            ("regular", "lmao", "chime"),
         ],
         # A whole evening alone with his human: coming home, dinner, TV, the laptop, play, bed and a
         # 3am crash. Lots of affection in a row is where a cat starts repeating itself.
@@ -78,6 +81,7 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("owner", "*reaches for the remote*", "reply"),
             ("owner", "can you move a little? you're lying on the remote", "reply"),
             ("owner", "*laughs and leaves it there*", "reply"),
+            ("quiet", "A few quiet minutes pass while the TV plays"),
             ("owner", "*puts on a nature documentary about birds*", "reply"),
             ("owner", "they're not real buddy, they're on the TV", "reply"),
             ("owner", "*gets up to get a snack*", "reply"),
@@ -86,6 +90,7 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("owner", "*crunches a chip loudly*", "reply"),
             ("owner", "fine, here's a tiny piece of chicken instead *gives you a bit of chicken*", "reply"),
             ("owner", "*opens my laptop to answer some emails*", "reply"),
+            ("quiet", "{owner} types quietly for a few minutes"),
             ("owner", "{name} you're on the keyboard"),
             ("owner", "*gently moves you off the keyboard*", "reply"),
             ("owner", "*types a few more words*", "reply"),
@@ -232,6 +237,7 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("shy", "*slowly holds out a hand toward the cat*", "chime"),
             ("shy", "he's so soft", "chime"),
             ("regular", "brb food", "chat"),
+            ("quiet", "Nobody says anything for a few minutes"),
             ("friend", "*lies on the floor scrolling on my phone*", "chime"),
             ("friend", "omg someone posted a video of a cat falling off a table", "chime"),
             ("owner", "don't give him ideas", "chime"),
@@ -245,6 +251,7 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("owner", "bye rin!", "chime"),
             ("owner", "*stretches and yawns*", "chime"),
             ("friend", "nap time for everyone", "chime"),
+            ("quiet", "The channel goes quiet"),
         ],
         # Off to the vet and back, then a long sulk his human has to win him back from.
         "vet-day": [
@@ -313,6 +320,7 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("mod", "we lost the round btw", "chime"),
             ("owner", "*puts you on the floor*", "reply"),
             ("owner", "ok focus", "chime"),
+            ("quiet", "Everyone is busy playing; nobody types for a few minutes"),
             ("regular", "they're rushing B", "chat"),
             ("friend", "I'm dead", "chat"),
             ("owner", "ugh this guy is cheating", "chime"),

@@ -40,6 +40,9 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         assert bot.llm.memories >= 7  # every long scene is turned into memories as it goes
         assert "    (writes a memory: Milo played laser with Whiskers for ages (1).)" in transcript
         assert "how Whiskers holds up as a scene goes on:" in transcript and "  replies 31+ (" in transcript
+        # A lull: nobody says anything, so Whiskers starts something himself
+        lull = transcript.index("--- Nobody says anything for a few minutes ---\n    (scene: scene")
+        assert transcript[lull:].split("\n")[2].startswith("Whiskers (starts something): *pounces on Angel's feet*")
         assert "===== catnip =====" in transcript and "Brandon: Here have some catnip *gives catnip*" in transcript
         assert "(scene: scene 1)" in transcript and "Whiskers: *pounces on Angel's feet*" in transcript
         assert "Milo: !play lofi hip hop\nAngel: this song slaps\n" in transcript  # read, not answered
@@ -154,18 +157,22 @@ def test_every_scene_line_is_valid_for_both_genders():
         for name, steps in SCENES.items():
             assert step_parts(steps[0])[0] != "time", name
             assert count_replies([name]) > 0, f"{name}: Whiskers never gets to answer"
-            whiskers_spoke = False
+            whiskers_spoke = someone_spoke = False
             for step in steps:
                 who, template, how = step_parts(step)
                 assert len(step) in (2, 3) and how in ("direct", "reply", "chat", "chime"), name
-                assert who in people | {"time"}, name
+                assert who in people | {"time", "quiet"}, name
+                if who == "quiet":
+                    assert len(step) == 2 and someone_spoke, f"{name}: a lull needs someone in the room first"
+                elif who != "time":
+                    someone_spoke = True
                 assert "{" not in template.format(name="Whiskers", owner="Brandon", **pronouns), name
                 if how in ("chat", "chime"):
                     assert "{name}" not in template, f"{name}: saying the cat's name would be talking to it"
                 if how == "reply":
                     assert whiskers_spoke, f"{name}: a reply needs a message from Whiskers to reply to"
                 if who == "time":
-                    whiskers_spoke = False  # a fresh room
+                    whiskers_spoke = someone_spoke = False  # a fresh room
                 elif how != "chat":
                     whiskers_spoke = True
     for name, setup in SETUPS.items():

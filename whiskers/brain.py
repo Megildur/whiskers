@@ -81,6 +81,23 @@ WARY_AT = -12
 QUIET_AFTER = 4  # messages in a row without a cat sound before Whiskers is reminded it has a voice
 
 
+@dataclass(frozen=True)
+class MischiefLevel:
+    """How often Whiskers starts trouble on his own (/whiskers mischief)."""
+    gap: float  # seconds between starting something unprompted in one channel
+    chance: float  # chance at each check (about once a minute) while a home channel is quiet
+    nudge: float  # chance that a reply comes with a note to start something too, not just react
+
+
+MISCHIEF = {
+    "off": None,
+    "sometimes": MischiefLevel(gap=3 * 3600, chance=1 / 30, nudge=0.12),
+    "often": MischiefLevel(gap=3600, chance=1 / 10, nudge=0.25),
+}
+MISCHIEF_QUIET = 5 * 60  # Whiskers starts something when nobody has said anything for this long...
+MISCHIEF_AROUND = 45 * 60  # ...but someone was talking within this, so there's somebody to bother
+
+
 @dataclass
 class Incoming:
     message_id: int
@@ -235,6 +252,8 @@ class Brain:
         self._last_answered: dict[tuple[int, int], int] = {}  # (channel, person) -> Whiskers' latest reply ID
         self._window_start: dict[int, int] = {}
         self._chore_failures: dict[int, int] = {}
+        self._mischief_at: dict[int, float] = {}  # channel -> when Whiskers last started something there
+        self._mischief_after: dict[int, int] = {}  # channel -> the newest message it had seen then
         try:
             from zoneinfo import ZoneInfo
 
@@ -340,6 +359,10 @@ class Brain:
         so it never falls minutes behind a fast chat."""
         key = (msg.channel_id, msg.author_id if kind == "direct" else 0)
         existing = self._jobs.get(key)
+        if existing and existing.kind == "mischief" and not existing.started:
+            existing.cancelled = True  # someone spoke first, so it isn't quiet anymore: answer them instead
+            del self._jobs[key]
+            existing = None
         if existing and not existing.started:
             existing.message = msg  # they kept talking; answer the newest message once
             return None
@@ -352,6 +375,36 @@ class Brain:
                 del self._jobs[room.key]
         job = ReplyJob(kind, msg, key)
         self._jobs[key] = job
+        return job
+
+    async def start_mischief(self, guild_id: int, channel_id: int, level: str, owner_id: int = 0,
+                             now: float | None = None) -> ReplyJob | None:
+        """Sometimes, when a home channel goes quiet while people are still around, Whiskers starts some
+        trouble on his own instead of waiting to be talked to. Checked about once a minute; returns the
+        job to post, or None. He never starts two things in a row without someone answering in between."""
+        setting = MISCHIEF.get(level)
+        if setting is None or self.scheduler.busy or any(key[0] == channel_id for key in self._jobs):
+            return None
+        now = time.time() if now is None else now
+        if now - self._mischief_at.get(channel_id, float("-inf")) < setting.gap:
+            return None
+        rows = await self.db.recent_messages(channel_id, 20)
+        people = [row for row in rows if not row.is_self]
+        if not people:
+            return None
+        last = people[-1]
+        if (now - rows[-1].created_at < MISCHIEF_QUIET or now - last.created_at > MISCHIEF_AROUND
+                or self._mischief_after.get(channel_id, 0) >= last.message_id):
+            return None
+        if self.rng.random() >= setting.chance:
+            return None
+        self._mischief_at[channel_id] = now
+        self._mischief_after[channel_id] = last.message_id
+        msg = Incoming(last.message_id, guild_id, channel_id, last.author_id, last.author_name, last.content,
+                       last.created_at, owner_id=owner_id)
+        job = ReplyJob("mischief", msg, (channel_id, 0))
+        self._jobs[job.key] = job
+        log.info("Whiskers is starting some mischief in channel %s.", channel_id)
         return job
 
     async def respond(self, job: ReplyJob, typing: Callable[[], AsyncContextManager],
@@ -401,6 +454,8 @@ class Brain:
             return self._last_answered.get((msg.channel_id, msg.author_id), 0) > msg.message_id
         if job.kind == "home":  # only if a reply was written after reading this message
             return self._seen.get(msg.channel_id, 0) >= msg.message_id
+        if job.kind == "mischief":  # nobody has spoken since it was decided, or the job would be cancelled
+            return False
         return self._last_own.get(msg.channel_id, 0) > msg.message_id
 
     async def record_own_message(self, msg: Incoming, message_id: int, text: str, created_at: float) -> None:
@@ -471,7 +526,7 @@ class Brain:
 
     def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
                       repeating: list[str] | None = None, news: list[str] | None = None,
-                      now: float | None = None, quiet: bool = False) -> list[str]:
+                      now: float | None = None, quiet: bool = False, mischievous: bool = False) -> list[str]:
         """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
         None of it depends on the next message, so it can be read ahead of time."""
         now = time.time() if now is None else now
@@ -487,6 +542,9 @@ class Brain:
         if quiet:
             notes.append("You haven't made a sound in a while. A mrrp, meow, purr or hiss would fit if the moment "
                          "calls for one.")
+        if mischievous:
+            notes.append("You're in a mischievous mood: as well as reacting, start some trouble of your own this time, "
+                         "unless someone is sad or it's a serious moment.")
         return notes
 
     def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False) -> str:
@@ -506,6 +564,13 @@ class Brain:
             how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
             return (f'{msg.author_name} {said}: "{latest}". React as a cat would, {how}, carrying on from what\'s '
                     f"been happening. If it's clearly meant for someone else, do your own cat thing nearby. {feeling}")
+        if kind == "mischief":  # nobody said anything: Whiskers starts something himself (start_mischief)
+            how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
+            return (f'It has gone quiet: nobody has said anything for a few minutes (the last was {msg.author_name}: '
+                    f'"{latest}"). You\'re bored, so start some mischief of your own, {how}, and make the people '
+                    f"here part of it: steal something of theirs and run, ambush someone's feet, knock something off "
+                    f"a table while staring at its owner, drop a toy on someone to start a game, or something else "
+                    f"{self.name} would do. Fit it to what's been happening. Your \"feeling\" is neutral.")
         return (f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                 f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
 
@@ -682,7 +747,11 @@ class Brain:
         # Whiskers copies its own recent messages, so a run of silent ones would keep it silent for good.
         quiet = len(own) >= QUIET_AFTER and not any(makes_sound(m) for m in own[-QUIET_AFTER:])
         news = [n for p in profiles if (n := self._news.pop((guild_id, p.user_id), None))]
-        notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet)
+        # Now and then Whiskers starts something himself instead of only answering (/whiskers mischief).
+        level = MISCHIEF.get((await self.db.guild_settings(guild_id)).mischief) if guild_id else None
+        mischievous = bool(level) and self.rng.random() < level.nudge
+        notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet,
+                                   mischievous=mischievous)
         return notes, {p.user_id for p in profiles}, {m.id for m in memories}
 
     def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:

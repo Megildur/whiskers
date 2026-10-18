@@ -1,7 +1,7 @@
 import random
 
 from fakes import ScriptedLLM
-from whiskers.brain import Brain, Incoming, chattiness_for, is_allowed
+from whiskers.brain import Brain, Incoming, ReplyJob, chattiness_for, is_allowed
 from whiskers.db import ChannelRule, GuildSettings, StoredMessage
 from whiskers.scheduler import Scheduler
 
@@ -455,3 +455,82 @@ def test_whiskers_knows_when_his_human_is_talking(cfg):
     brain = make_brain(cfg)
     note = brain.reply_note(incoming("*shakes the treat bag*", author=1, owner_id=1), "direct")
     assert note.startswith('user1 (your human) just said or did: "*shakes the treat bag*"')
+
+
+def test_whiskers_starts_mischief_when_a_home_channel_goes_quiet(cfg, tmp_path):
+    import asyncio
+    import json
+    from contextlib import asynccontextmanager
+
+    from whiskers.brain import MISCHIEF, MISCHIEF_AROUND, MISCHIEF_QUIET
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, json.dumps({"scene": "bored", "reply": "*steals Brandon's sock and runs*"}))
+        brain.rng = EagerRandom()
+        await brain.db.connect()
+        said = 10_000.0
+        msg = incoming("brb food", author=8, message_id=700, owner_id=8)
+        msg.created_at = said
+        await brain.observe(msg, GuildSettings(), 0, home=True)
+
+        assert await brain.start_mischief(1, 10, "sometimes", 8, now=said + 60) is None  # not quiet yet
+        assert await brain.start_mischief(1, 10, "sometimes", 8, now=said + MISCHIEF_AROUND + 60) is None  # nobody's around
+        assert await brain.start_mischief(1, 10, "off", 8, now=said + MISCHIEF_QUIET + 60) is None
+        job = await brain.start_mischief(1, 10, "sometimes", 8, now=said + MISCHIEF_QUIET + 60)
+        assert job.kind == "mischief" and job.message.message_id == 700 and job.message.owner_id == 8
+        assert await brain.start_mischief(1, 10, "often", 8, now=said + MISCHIEF_QUIET + 61) is None  # one at a time
+
+        posted = []
+
+        async def deliver(text):
+            posted.append(text)
+            return 701
+
+        @asynccontextmanager
+        async def typing():
+            yield
+
+        assert await brain.respond(job, typing, deliver) == "*steals Brandon's sock and runs*"
+        note = next(call[0][-1]["content"] for call in brain.llm.calls if call[1].get("json_schema"))
+        assert "It has gone quiet" in note and "start some mischief of your own" in note and "user8" in note
+        assert (await brain.db.profile(1, 8)).affection == 0  # nobody did anything to him
+        # Not again until someone has said something, and not before the gap is over
+        later = said + MISCHIEF_QUIET + 60 + MISCHIEF["sometimes"].gap + 60
+        assert await brain.start_mischief(1, 10, "sometimes", 8, now=later) is None
+        reply = incoming("lmao what", author=8, message_id=710, owner_id=8)
+        reply.created_at = later - MISCHIEF_QUIET - 60
+        await brain.observe(reply, GuildSettings(), 0, home=True)
+        assert (await brain.start_mischief(1, 10, "sometimes", 8, now=later)).message.message_id == 710
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_someone_talking_first_cancels_the_mischief(cfg):
+    brain = make_brain(cfg)
+    mischief = ReplyJob("mischief", incoming("brb", message_id=1), (10, 0))
+    brain._jobs[mischief.key] = mischief
+    job = brain.submit("home", incoming("back", message_id=2))
+    assert mischief.cancelled and job.kind == "home" and brain._jobs[(10, 0)] is job
+
+
+def test_now_and_then_whiskers_is_nudged_to_start_something(cfg, tmp_path):
+    import asyncio
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, "")
+        await brain.db.connect()
+        rows = await brain.db.recent_messages(10, 5)
+        brain.rng = EagerRandom()
+        notes, _, _ = await brain._context(1, 10, rows, 1, 0, [])
+        assert any("mischievous mood" in n for n in notes)
+        await brain.db.update_guild_settings(1, mischief="off")
+        notes, _, _ = await brain._context(1, 10, rows, 1, 0, [])
+        assert not any("mischievous mood" in n for n in notes)
+        brain.rng = SilentRandom()
+        await brain.db.update_guild_settings(1, mischief="often")
+        notes, _, _ = await brain._context(1, 10, rows, 1, 0, [])
+        assert not any("mischievous mood" in n for n in notes)  # only now and then
+        await brain.db.close()
+
+    asyncio.run(go())

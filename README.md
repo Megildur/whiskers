@@ -87,9 +87,10 @@ Whiskers only reads and talks where you let it. Nothing happens until you do one
 | `/whiskers channel list` | Manage Server | Where Whiskers lives and roams. |
 | `/whiskers roam` | Manage Server | On: Whiskers also roams every channel it can see, answering when called and joining in when it wants. Off (default): only its home channels. |
 | `/whiskers chattiness <percent> [channel]` | Manage Server | While roaming, how often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
+| `/whiskers mischief <level>` | Manage Server | How often Whiskers starts games and shenanigans on his own: off, sometimes (default) or often. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), marathon (7 long chats, 281 replies, about 2 hours), all-discord (208 scenes, about 2½ hours) or all (264 scenes, about 6 hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
+| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), marathon (7 long chats, 288 replies, about 2 hours), all-discord (208 scenes, about 2½ hours) or all (266 scenes, about 6 hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -107,6 +108,7 @@ Server admins can change who sees the `/whiskers` commands in **Server Settings 
 - **Answers every message in its home channels**, and anywhere when someone @mentions it, replies to one of its messages or says "Whiskers". If someone keeps talking right after Whiskers answered them, it usually answers again.
 - **Is devoted to its human** (the server owner unless you pick someone with `/whiskers owner`), and is curious and friendly with everyone else, warming up the more they pet, feed and play with it.
 - **Plays along with roleplay.** What people do in *asterisks* really happens to Whiskers: give it food and it eats, throw it out the window and it lands outside.
+- **Starts trouble on his own.** He doesn't just wait for people: now and then, in the middle of a chat, he starts something himself (steals a sock, ambushes someone's feet, drops a toy in a lap to start a game). And when one of his home channels goes quiet while people are still around (nobody has said anything for 5 minutes, but someone talked in the last 45), he may start some mischief unprompted, at most once every 3 hours per channel and never twice in a row without someone answering. `/whiskers mischief` sets how often: off, sometimes (default) or often (up to once an hour).
 - **Sometimes chimes in** on its own while roaming, based on the chattiness setting. It's more likely to when people talk about cat things like treats, fish or lasers, or when its favourite people talk, and it won't take over a channel.
 - **Reacts with emoji** instead of always writing: 🐟 for food, 😹 at jokes, 🎉 for good news, 😿 when someone's sad, 🙀 for the vacuum or a dog, 💤 at bedtime, 👀 at pictures and GIFs, 😾 when someone insults it or for people it doesn't trust. Reactions need no AI, so they're instant, and they're spaced out so a busy chat isn't covered in emoji. Often a reaction replaces a chime-in completely. Turn them off with `/whiskers options reactions:False`.
 - **💤 on your message** means Whiskers is still waking up or too many people are waiting. Try again in a bit.
@@ -180,7 +182,7 @@ The commented `.env.example` lists them all. The ones you might change:
 
 ## Testing changes
 
-`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 264 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, a lot of everyday Discord chat, and seven marathon chats), so most packs take 5 to 25 minutes.
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 266 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, a lot of everyday Discord chat, and seven marathon chats), so most packs take 5 to 25 minutes.
 
 The **feelings** pack starts some scenes with history (Angel almost loved enough to be chosen, Tearyu having pulled its tail before) and skips ahead in time ("--- The next day ---"), so only what Whiskers remembers about people carries over. Ordinary server chat is where Whiskers spends most of its life, so most scenes are Discord packs (all of them together: `all-discord`):
 
@@ -200,7 +202,7 @@ The **feelings** pack starts some scenes with history (Angel almost loved enough
 
 Lines are written the way people really type, and links, custom emoji and pings go through the same clean-up as real messages (a Tenor link reaches Whiskers as "[sends a gif: cat vibing]"). Whiskers reads every line, sometimes chimes in (marked "chimes in") and answers when someone pings him, says his name or replies to his message (marked "replying to Whiskers").
 
-The other scenes are a few replies long and start fresh, but real chats run for dozens of messages, and some problems only show up that far in: going quiet, falling into habits, staying in one mood too long, losing the thread, an old memory wandering into the scene. The **marathon** pack tests that with seven continuous chats of 37 to 46 replies each (about 2 hours), modelled on real home-channel chat:
+The other scenes are a few replies long and start fresh, but real chats run for dozens of messages, and some problems only show up that far in: going quiet, falling into habits, staying in one mood too long, losing the thread, an old memory wandering into the scene. The **marathon** pack tests that with seven continuous chats of 38 to 48 replies each (about 2 hours), modelled on real home-channel chat:
 
 | Scene | What happens |
 |-------|--------------|
@@ -211,6 +213,8 @@ The other scenes are a few replies long and start fresh, but real chats run for 
 | `home-channel-afternoon` | People talk about him out of character, ask how he works and post GIFs, with only some roleplay |
 | `vet-day` | The carrier, the vet, and a long sulk his human has to win him back from |
 | `all-nighter` | A late gaming night where most of the chat isn't about him: a spilled drink, a scare, a 4am wake-up |
+
+Some scenes have lulls ("--- Nobody says anything for a few minutes ---") where Whiskers starts something on his own, marked "starts something"; the mischief pack's `bored-cat` and `lazy-sunday` scenes test that too.
 
 As in real chat, every 30 messages the chat so far is turned into a memory, shown as "(writes a memory: ...)", so later replies can draw on it. Memories don't carry over between scenes.
 

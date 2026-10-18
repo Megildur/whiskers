@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, AsyncIterator
 
 import discord
 from discord.ext import commands
 
-from ..brain import Incoming, ReplyJob, chattiness_for, is_allowed, rule_for
+from ..brain import MISCHIEF, MISCHIEF_AROUND, Incoming, ReplyJob, chattiness_for, is_allowed, rule_for
 from ..db import GuildSettings
 from ..llm import LLMError
 from ..text import person_name, readable, split_message
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
 log = logging.getLogger("whiskers.chat")
 
 CHAT_MESSAGE_TYPES = (discord.MessageType.default, discord.MessageType.reply)
+MISCHIEF_CHECK = 60  # seconds between looking for a quiet home channel to start some trouble in
 
 
 def channel_chain(channel: discord.abc.Messageable) -> list[int]:
@@ -54,6 +56,14 @@ class Chat(commands.Cog):
     def __init__(self, bot: WhiskersBot) -> None:
         self.bot = bot
         self._tasks: set[asyncio.Task] = set()
+        self._mischief: asyncio.Task | None = None
+
+    async def cog_load(self) -> None:
+        self._mischief = asyncio.create_task(self._mischief_loop())
+
+    async def cog_unload(self) -> None:
+        if self._mischief:
+            self._mischief.cancel()
 
     @commands.Cog.listener()
     async def on_ready(self) -> None:
@@ -101,6 +111,39 @@ class Chat(commands.Cog):
             task = asyncio.create_task(self._answer(job, message.channel))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
+
+    async def _mischief_loop(self) -> None:
+        """Every minute, see whether Whiskers feels like starting some trouble in a quiet home channel."""
+        await self.bot.wait_until_ready()
+        while not self.bot.is_closed():
+            await asyncio.sleep(MISCHIEF_CHECK)
+            try:
+                await self.start_mischief()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Couldn't start any mischief")
+
+    async def start_mischief(self) -> None:
+        bot = self.bot
+        if not bot.engine.ready or bot.scheduler.busy:
+            return
+        for guild in bot.guilds:
+            settings = await bot.db.guild_settings(guild.id)
+            if MISCHIEF.get(settings.mischief) is None:
+                continue
+            rules = await bot.db.channel_rules(guild.id)
+            for channel_id in await bot.db.active_channels(guild.id, time.time() - MISCHIEF_AROUND):
+                channel = guild.get_channel_or_thread(channel_id)
+                if channel is None or rule_for(rules, channel_chain(channel)) != "allow" or not self._can_send(channel):
+                    continue  # only in its home channels
+                job = await bot.brain.start_mischief(guild.id, channel_id, settings.mischief,
+                                                     settings.owner_id or guild.owner_id or 0)
+                if job:
+                    task = asyncio.create_task(self._answer(job, channel))
+                    self._tasks.add(task)
+                    task.add_done_callback(self._tasks.discard)
+                    return  # one thing at a time
 
     def _incoming(self, message: discord.Message) -> Incoming | None:
         content = readable(message.clean_content)
@@ -157,7 +200,8 @@ class Chat(commands.Cog):
 
         async def deliver(text: str) -> int | None:
             reference = None
-            if job.kind == "direct" or self.bot.brain.last_message_id(msg.channel_id) != msg.message_id:
+            answering = job.kind != "mischief"  # mischief Whiskers started himself isn't an answer to anyone
+            if answering and (job.kind == "direct" or self.bot.brain.last_message_id(msg.channel_id) != msg.message_id):
                 reference = discord.MessageReference(
                     message_id=msg.message_id, channel_id=msg.channel_id, guild_id=msg.guild_id or None,
                     fail_if_not_exists=False,

@@ -30,6 +30,11 @@ UNSET_RULE = {
     "everywhere": "Whiskers roams there: it answers when called and joins in when it wants",
 }
 SPEECH_NAMES = {False: "cat sounds and actions only", True: "has learned to communicate"}
+MISCHIEF_NAMES = {
+    "off": "he only reacts",
+    "sometimes": "now and then, at most every 3 hours in a quiet channel",
+    "often": "a lot, up to once an hour in a quiet channel",
+}
 
 
 def _on(value: bool) -> str:
@@ -276,6 +281,21 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
             ephemeral=True,
         )
 
+    @app_commands.command(name="mischief", description="How often Whiskers starts trouble on his own")
+    @app_commands.describe(level="How often he starts games and shenanigans without being asked")
+    @app_commands.choices(level=[
+        app_commands.Choice(name=f"{name.capitalize()}: {about}", value=name) for name, about in MISCHIEF_NAMES.items()
+    ])
+    async def mischief(self, interaction: discord.Interaction, level: app_commands.Choice[str]) -> None:
+        await self.bot.db.update_guild_settings(interaction.guild_id, mischief=level.value)
+        if level.value == "off":
+            text = "😇 Whiskers only reacts now: he won't start any trouble on his own."
+        else:
+            text = (f"😼 Mischief: **{level.value}**. Now and then Whiskers starts something himself in the middle of a "
+                    f"chat, and when one of his home channels goes quiet while people are around he may start some "
+                    f"trouble on his own ({MISCHIEF_NAMES[level.value]}).")
+        await interaction.response.send_message(text, ephemeral=True)
+
     @app_commands.command(name="options", description="Turn Whiskers' extra behaviours on or off")
     @app_commands.describe(
         reactions="React to messages with emoji (it never needs the AI, so it's instant)",
@@ -333,6 +353,8 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
         if chosen:
             human += "\nAlso chose: " + ", ".join(f"<@{p.user_id}>" for p in chosen)
         result.add_field(name="Human", value=human, inline=False)
+        result.add_field(name="Mischief", value=f"{settings.mischief.capitalize()}: {MISCHIEF_NAMES[settings.mischief]} "
+                                                f"(`/whiskers mischief` changes it)", inline=False)
         result.add_field(name="Brain", value="\n".join(brain_lines), inline=False)
         counts = await bot.db.counts(interaction.guild_id)
         journal = await bot.db.journal(interaction.guild_id)

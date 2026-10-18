@@ -21,6 +21,8 @@ def test_settings_and_channel_rules(tmp_path):
         await db.update_guild_settings(1, mode="everywhere", chattiness=20, owner_id=42)
         settings = await db.guild_settings(1)
         assert (settings.mode, settings.chattiness, settings.owner_id) == ("everywhere", 20, 42)
+        assert settings.mischief == "sometimes"
+        assert (await db.update_guild_settings(1, mischief="off")).mischief == "off"
 
         await db.set_channel_rule(1, 10, rule="allow")
         await db.set_channel_rule(1, 10, chattiness=50)  # keeps the rule
@@ -138,7 +140,7 @@ def test_old_databases_get_the_new_journal_columns(tmp_path):
         assert (journal.text, journal.can_speak, journal.reflections) == ("- old", False, 0)
         assert journal.born_at > 0
         settings = await db.guild_settings(1)
-        assert (settings.chattiness, settings.owner_id) == (12, 0)
+        assert (settings.chattiness, settings.owner_id, settings.mischief) == (12, 0, "sometimes")
         angel = await db.profile(1, 5)
         assert (angel.chats, angel.affection, angel.feelings, angel.chosen) == (9, 0.0, [], False)
         await db.close()

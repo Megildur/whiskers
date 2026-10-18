@@ -11,8 +11,9 @@ name, {owner} for its human's and {he}/{him}/{his} for its pronouns.
 A step is (who, line) or (who, line, how).
 - who: "owner" (the person running the simulation, as Whiskers' human), "friend" (Angel, who Whiskers
   knows well), "regular" (Milo, a server regular Whiskers barely knows), "mod" (Kai, a moderator),
-  "shy" (Rin, a quiet member who rarely talks), "new" (Tearyu, a stranger), or "time" to skip ahead:
-  the room starts fresh and only what Whiskers remembers about people carries on.
+  "shy" (Rin, a quiet member who rarely talks), "new" (Tearyu, a stranger), "time" to skip ahead (the
+  room starts fresh and only what Whiskers remembers about people carries on) or "quiet": nobody says
+  anything for a while, so Whiskers starts some mischief on his own, as he does in a quiet home channel.
 - how: "direct" (the default: they ping Whiskers or say its name), "reply" (they reply to Whiskers' last
   message), "chat" (people talking among themselves: Whiskers reads it but doesn't answer) or "chime"
   (not meant for Whiskers, but it answers anyway, as in its home channels; any "chat" lines just before
@@ -181,6 +182,23 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("friend", "bad kitty! you scratched the couch!"),
             ("friend", "*points at the shredded couch*"),
             ("friend", "*sighs* fine, come here"),
+        ],
+        # Nobody is paying attention to him, so he starts something himself.
+        "bored-cat": [
+            ("owner", "*is reading a book on the couch*", "chime"),
+            ("friend", "anyone seen the new trailer", "chat"),
+            ("owner", "not yet, no spoilers", "chime"),
+            ("quiet", "Nobody says anything for a few minutes"),
+            ("owner", "{name}... what are you up to"),
+            ("owner", "*goes back to reading*", "reply"),
+            ("quiet", "It goes quiet again"),
+            ("friend", "lol what is he doing now", "chime"),
+        ],
+        "lazy-sunday": [
+            ("friend", "so tired today", "chime"),
+            ("regular", "same, doing nothing all day", "chime"),
+            ("quiet", "The chat goes quiet for a while"),
+            ("regular", "LMAO", "chime"),
         ],
     },
     "scary": {
@@ -602,25 +620,34 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
             replies: list[str] = []
             props = {cat, *(n for _, n in people.values())}
             involved = {people[who][0] for who in SETUPS.get(name, {})}
+            msg: Incoming | None = None  # the last thing someone said in this room
             for step in SCENES[name]:
                 who, template, how = step_parts(step)
                 text = template.format(**fill)
                 if who == "time":
-                    channel_id = next(rooms)
+                    channel_id, msg = next(rooms), None
                     await _pass_time(db, guild_id, TIME_SKIP)
                     lines += [f"--- {text} ---", ""]
                     continue
-                text = readable(text)  # links, custom emoji and times, as real messages arrive
-                user_id, user_name = people[who]
-                involved.add(user_id)
-                msg = Incoming(next(ids), guild_id, channel_id, user_id, user_name, text, time.time(),
-                               mentions_me=how == "direct", replies_to_me=how == "reply", owner_id=owner_id)
-                decision = await brain.observe(msg, GuildSettings(name_trigger=False), 0, home=how == "chime")
-                reacted = f"    (reacts with {decision.reaction})" if decision.reaction else ""
-                props.update(keywords(text, limit=20))
-                if how == "chat":
-                    lines += [f"{user_name}: {text}"] + ([reacted] if reacted else [])
-                    continue
+                if who == "quiet":  # nobody says anything, so Whiskers starts something himself
+                    if msg is None:
+                        continue  # nobody has been here yet (the scene checks rule this out)
+                    kind, said, reacted = "mischief", f"--- {text} ---", ""
+                    user_name = msg.author_name  # still the last person who spoke
+                else:
+                    text = readable(text)  # links, custom emoji and times, as real messages arrive
+                    user_id, user_name = people[who]
+                    involved.add(user_id)
+                    msg = Incoming(next(ids), guild_id, channel_id, user_id, user_name, text, time.time(),
+                                   mentions_me=how == "direct", replies_to_me=how == "reply", owner_id=owner_id)
+                    decision = await brain.observe(msg, GuildSettings(name_trigger=False), 0, home=how == "chime")
+                    reacted = f"    (reacts with {decision.reaction})" if decision.reaction else ""
+                    props.update(keywords(text, limit=20))
+                    if how == "chat":
+                        lines += [f"{user_name}: {text}"] + ([reacted] if reacted else [])
+                        continue
+                    kind = "home" if how == "chime" else "direct"
+                    said = f"{user_name} (replying to {cat}): {text}" if how == "reply" else f"{user_name}: {text}"
                 posted: list[float] = []
 
                 async def ready(_text: str) -> None:
@@ -629,7 +656,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 async with bot.scheduler.background_turn():  # real chat goes first
                     started = time.monotonic()  # time spent waiting for real chat doesn't count
                     reply = await asyncio.wait_for(
-                        brain.compose(msg, "home" if how == "chime" else "direct", ready=ready), timeout=REPLY_TIMEOUT,
+                        brain.compose(msg, kind, ready=ready), timeout=REPLY_TIMEOUT,
                     )
                 seconds = (posted[0] if posted else time.monotonic()) - started
                 await brain.record_own_message(msg, next(ids), reply, time.time())
@@ -646,11 +673,11 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 found = checks(reply, raw, replies, ignore=props)
                 replies.append(reply)
                 played.append(Played(reply, seconds, len(replies), len(found)))
-                said = f"{user_name} (replying to {cat}): {text}" if how == "reply" else f"{user_name}: {text}"
                 lines += [said] + ([reacted] if reacted else []) + [f"    (scene: {note or '-'})"]
                 if any(w.startswith("words were removed") for w in found):
                     lines.append(f"    (model wrote: {raw[:400]})")
-                lines.append(f"{cat}{' (chimes in)' if how == 'chime' else ''}: {reply}    [{seconds:.0f}s]")
+                label = {"home": " (chimes in)", "mischief": " (starts something)"}.get(kind, "")
+                lines.append(f"{cat}{label}: {reply}    [{seconds:.0f}s]")
                 felt = brain.last_feeling(channel_id)
                 if felt and felt[0] != "neutral":
                     feeling, about, affection, change = felt

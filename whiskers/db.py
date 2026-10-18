@@ -28,7 +28,8 @@ CREATE TABLE IF NOT EXISTS guild_settings (
     reactions INTEGER NOT NULL DEFAULT 1,
     name_trigger INTEGER NOT NULL DEFAULT 1,
     ping_on_reply INTEGER NOT NULL DEFAULT 0,
-    owner_id INTEGER NOT NULL DEFAULT 0
+    owner_id INTEGER NOT NULL DEFAULT 0,
+    mischief TEXT NOT NULL DEFAULT 'sometimes'
 );
 CREATE TABLE IF NOT EXISTS channel_rules (
     guild_id INTEGER NOT NULL,
@@ -109,6 +110,7 @@ ADDED_COLUMNS = {
     },
     "guild_settings": {
         "owner_id": "INTEGER NOT NULL DEFAULT 0",
+        "mischief": "TEXT NOT NULL DEFAULT 'sometimes'",
     },
     "profiles": {
         "affection": "REAL NOT NULL DEFAULT 0",
@@ -144,6 +146,7 @@ class GuildSettings:
     name_trigger: bool = True  # saying the cat's name counts as talking to it
     ping_on_reply: bool = False
     owner_id: int = 0  # Whiskers' human; 0 means the server owner
+    mischief: str = "sometimes"  # how often Whiskers starts trouble on his own: "off", "sometimes" or "often"
 
 
 @dataclass
@@ -274,13 +277,13 @@ class Database:
             row = await cur.fetchone()
         settings = GuildSettings() if row is None else GuildSettings(
             row["mode"], row["chattiness"], bool(row["reactions"]), bool(row["name_trigger"]),
-            bool(row["ping_on_reply"]), row["owner_id"],
+            bool(row["ping_on_reply"]), row["owner_id"], row["mischief"],
         )
         self._settings[guild_id] = settings
         return settings
 
     async def update_guild_settings(self, guild_id: int, **changes) -> GuildSettings:
-        allowed = {"mode", "chattiness", "reactions", "name_trigger", "ping_on_reply", "owner_id"}
+        allowed = {"mode", "chattiness", "reactions", "name_trigger", "ping_on_reply", "owner_id", "mischief"}
         if set(changes) - allowed:
             raise ValueError(f"unknown settings: {set(changes) - allowed}")
         await self.conn.execute("INSERT OR IGNORE INTO guild_settings (guild_id) VALUES (?)", (guild_id,))
@@ -343,6 +346,14 @@ class Database:
         ) as cur:
             rows = await cur.fetchall()
         return [_row_message(row) for row in reversed(rows)]
+
+    async def active_channels(self, guild_id: int, since: float) -> list[int]:
+        """Channels where someone other than Whiskers has said something since `since`."""
+        async with self.conn.execute(
+            "SELECT DISTINCT channel_id FROM messages WHERE guild_id = ? AND is_self = 0 AND created_at > ?",
+            (guild_id, since),
+        ) as cur:
+            return [row["channel_id"] for row in await cur.fetchall()]
 
     async def recent_guild_messages(self, guild_id: int, limit: int) -> list[StoredMessage]:
         async with self.conn.execute(

@@ -34,6 +34,12 @@ def test_roaming_and_home_channels(tmp_path):
         await Admin.channel_allow.callback(cog, interaction, channel)
         assert (await db.channel_rules(1))[55].rule == "allow"
         assert "answers every message there" in interaction.response.sent[-1]
+
+        await Admin.mischief.callback(cog, interaction, app_commands.Choice(name="Often", value="often"))
+        assert (await db.guild_settings(1)).mischief == "often"
+        assert "start some trouble on his own" in interaction.response.sent[-1]
+        await Admin.mischief.callback(cog, interaction, app_commands.Choice(name="Off", value="off"))
+        assert (await db.guild_settings(1)).mischief == "off" and "only reacts" in interaction.response.sent[-1]
         await db.close()
 
     asyncio.run(go())
