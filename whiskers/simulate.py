@@ -20,8 +20,10 @@ A step is (who, line) or (who, line, how).
 
 Times are how long until the reply would be posted, with the start of each reply read ahead of time as
 it is in real chat while people type (Brain.prepare_next). Emoji reactions show up as "(reacts with ...)".
+Every 30 messages in a scene, the chat is turned into a memory as it is in real chat, and the memory is
+shown; that happens between replies and isn't timed. Memories don't carry over from one scene to the next.
 
-The everyday Discord packs live in discord_scenes.py.
+The everyday Discord packs live in discord_scenes.py, and the long "marathon" scenes in marathon_scenes.py.
 """
 from __future__ import annotations
 
@@ -34,11 +36,11 @@ import time
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Awaitable, Callable
 
-from . import discord_scenes
+from . import discord_scenes, marathon_scenes
 from .brain import FALLBACK_ACTIONS, Brain, Incoming
 from .db import Database, Feeling, GuildSettings
-from .llm import CHORES
-from .text import is_cat_sound, keywords, readable, repeated_actions
+from .llm import CHORES, LLMError
+from .text import ACTION_OR_PLAIN, is_cat_sound, keywords, makes_sound, readable, repeated_actions
 
 if TYPE_CHECKING:
     from .bot import WhiskersBot
@@ -356,6 +358,7 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
 }
 
 PACKS.update(discord_scenes.PACKS)
+PACKS.update(marathon_scenes.PACKS)
 GROUPS = {"all-discord": [pack for pack in PACKS if pack.startswith("discord")]}
 
 # People's history before a scene starts. Feelings are (feeling, what they did, days ago).
@@ -382,6 +385,7 @@ SETUPS: dict[str, dict[str, dict]] = {
                             "feelings": [("loved", "belly rubs", 2)]}},
     "jealous-friend": {"friend": {"chats": 50, "affection": 65, "chosen": True}},
     **discord_scenes.SETUPS,
+    **marathon_scenes.SETUPS,
 }
 
 SCENES: dict[str, list[tuple[str, ...]]] = {name: lines for pack in PACKS.values() for name, lines in pack.items()}
@@ -398,6 +402,66 @@ REPLY_TIMEOUT = 240  # seconds; a normal reply takes well under a minute
 FIRST_PERSON = re.compile(r"\*[^*]*\b(I|I'm|me|my|myself)\b[^*]*\*")
 DOG_LIKE = re.compile(r"\b(wag(s|ging|ged)?|panting|barks?|barking|woofs?)\b", re.I)
 SCREEN = re.compile(r"\b(phones?|screens?|links?|gifs?|pictures?)\b", re.I)  # things only on people's screens
+# A reply that only watches: the model's fallback when it doesn't know what to do.
+PASSIVE_START = re.compile(r"^[^a-z]*(tilts|tips|cocks|looks|stares|blinks|watches|freezes|stops|pauses|peers|"
+                           r"glances)\b", re.I)
+HOLDING_UP = [(1, 10), (11, 20), (21, 30), (31, 10**6)]  # replies into a scene, for how Whiskers holds up
+
+
+@dataclass
+class Played:
+    """One reply in a simulation, for the measures at the end."""
+    reply: str
+    seconds: float
+    position: int  # how many replies into its scene: 1 for the first
+    warnings: int
+
+
+def says_sound(reply: str) -> bool:
+    """True if Whiskers says a cat sound out loud (MRRP!), not just does one inside an action (*purrs*)."""
+    return any(is_cat_sound(token) for part in ACTION_OR_PLAIN.split(reply)
+               if not part.strip().startswith(("*", "_")) for token in part.split())
+
+
+def _percent(part: int, whole: int) -> str:
+    return f"{round(100 * part / whole)}%" if whole else "-"
+
+
+def measures(played: list[Played]) -> list[str]:
+    """The numbers at the end of a transcript, to compare one run with another at a glance."""
+    if not played:
+        return ["0 replies"]
+
+    def average(values: list[float]) -> str:
+        return f"{sum(values) / len(values):.0f}" if values else "-"
+
+    first = [p.seconds for p in played if p.position == 1]
+    rest = [p.seconds for p in played if p.position > 1]
+    n = len(played)
+    lines = [
+        f"{n} replies, {average([p.seconds for p in played])}s average "
+        f"(a scene's first reply {average(first)}s, the rest {average(rest)}s)",
+        f"sounds: {_percent(sum(makes_sound(p.reply) for p in played), n)} of replies make a cat sound, "
+        f"{_percent(sum(says_sound(p.reply) for p in played), n)} say one out loud",
+        f"length: {average([len(p.reply) for p in played])} characters on average",
+        f"passive starts (tilts, looks, stares...): {_percent(sum(bool(PASSIVE_START.match(p.reply)) for p in played), n)}",
+    ]
+    if any(p.position > HOLDING_UP[0][1] for p in played):
+        lines.append("how Whiskers holds up as a scene goes on:")
+        for low, high in HOLDING_UP:
+            group = [p for p in played if low <= p.position <= high]
+            if not group:
+                continue
+            warnings = sum(p.warnings for p in group)
+            label = f"{low}-{high}" if high < 10**6 else f"{low}+"
+            lines.append(
+                f"  replies {label} ({len(group)}): sounds {_percent(sum(makes_sound(p.reply) for p in group), len(group))} "
+                f"({_percent(sum(says_sound(p.reply) for p in group), len(group))} out loud) · "
+                f"{average([len(p.reply) for p in group])} characters · passive "
+                f"{_percent(sum(bool(PASSIVE_START.match(p.reply)) for p in group), len(group))} · "
+                f"{warnings} warning{'' if warnings == 1 else 's'} · {average([p.seconds for p in group])}s"
+            )
+    return lines
 
 
 def scenes_for(pack: str | None, scene: str | None = None) -> list[str]:
@@ -473,8 +537,10 @@ def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozense
 
 async def _seed_people(db: Database, guild_id: int, people: dict[str, tuple[int, str]], setup: dict[str, dict]
                        ) -> list[str]:
-    """Start a scene with everyone's history as SETUPS says. Returns lines describing it."""
+    """Start a scene with everyone's history as SETUPS says, and no memories from earlier scenes.
+    Returns lines describing it."""
     await db.conn.execute("DELETE FROM profiles WHERE guild_id = ?", (guild_id,))
+    await db.conn.execute("DELETE FROM memories WHERE guild_id = ?", (guild_id,))
     now, described = time.time(), []
     for who in [*DEFAULT_SEEDS, *(w for w in setup if w not in DEFAULT_SEEDS)]:
         seed = {**DEFAULT_SEEDS.get(who, {}), **setup.get(who, {})}
@@ -514,7 +580,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
               f"temperature {cfg.temperature} · {cfg.cat_gender} · scene note {cfg.scene_note} the message", ""]
     total, done = count_replies(scenes), 0
     flagged: dict[str, int] = {}
-    seconds_total = 0.0
+    played: list[Played] = []
     log.info("Simulation started: %s", ", ".join(scenes))
     try:
         real = await bot.db.journal(guild_id)
@@ -566,13 +632,20 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                         brain.compose(msg, "home" if how == "chime" else "direct", ready=ready), timeout=REPLY_TIMEOUT,
                     )
                 seconds = (posted[0] if posted else time.monotonic()) - started
-                seconds_total += seconds
                 await brain.record_own_message(msg, next(ids), reply, time.time())
+                memory = None
                 async with bot.scheduler.background_turn():  # as in real chat while people type; not timed
+                    batch = await db.summary_batch(channel_id=channel_id)
+                    if batch:  # every 30 messages, chat becomes memories, as in real chat
+                        try:
+                            memory = await asyncio.wait_for(brain.summarize(batch), timeout=REPLY_TIMEOUT)
+                        except LLMError as error:
+                            log.warning("Simulation: couldn't write a memory: %s", error)
                     await asyncio.wait_for(brain.prepare_next(msg), timeout=REPLY_TIMEOUT)
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
                 found = checks(reply, raw, replies, ignore=props)
                 replies.append(reply)
+                played.append(Played(reply, seconds, len(replies), len(found)))
                 said = f"{user_name} (replying to {cat}): {text}" if how == "reply" else f"{user_name}: {text}"
                 lines += [said] + ([reacted] if reacted else []) + [f"    (scene: {note or '-'})"]
                 if any(w.startswith("words were removed") for w in found):
@@ -592,6 +665,8 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                     for warning in found:
                         kind = warning.split(":")[0].split(" (")[0]
                         flagged[kind] = flagged.get(kind, 0) + 1
+                if memory:
+                    lines.append(f"    (writes a memory: {memory})")
                 lines.append("")
                 done += 1
                 log.info("Simulation %d/%d (%s): %s -> %s", done, total, name, text, reply)
@@ -606,9 +681,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
             if feelings_now:
                 lines += [f"    (how {cat} feels now: {' · '.join(feelings_now)})", ""]
         summary = ", ".join(f"{kind}: {count}" for kind, count in sorted(flagged.items(), key=lambda kv: -kv[1]))
-        lines += ["===== summary =====",
-                  f"{done} replies, {seconds_total / max(done, 1):.0f}s average",
-                  f"warnings: {summary or 'none'}"]
+        lines += ["===== summary =====", *measures(played), f"warnings: {summary or 'none'}"]
     finally:
         await db.close()
         path.unlink(missing_ok=True)

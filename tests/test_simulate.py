@@ -6,7 +6,8 @@ from fakes import ScriptedLLM
 from whiskers.db import Database
 from whiskers.scheduler import Scheduler
 from whiskers.simulate import (
-    GROUPS, PACKS, SCENES, SETUPS, checks, count_replies, run_scenes, scenes_for, step_parts,
+    GROUPS, PACKS, SCENES, SETUPS, Played, checks, count_replies, measures, run_scenes, says_sound, scenes_for,
+    step_parts,
 )
 
 
@@ -14,10 +15,14 @@ class FakeLLM(ScriptedLLM):
     def __init__(self):
         super().__init__()
         self.calls = 0
+        self.memories = 0
 
     async def answer(self, messages, kwargs):
         if kwargs.get("max_tokens") == 1:
             return ""  # reading the next reply's start ahead of time
+        if "summary" in (kwargs.get("json_schema") or {}).get("properties", {}):
+            self.memories += 1
+            return json.dumps({"summary": f"Milo played laser with Whiskers for ages ({self.memories}).", "facts": []})
         self.calls += 1
         return json.dumps({"scene": f"scene {self.calls}", "reply": "*pounces on Angel's feet*", "feeling": "loved",
                            "about": "chin scratches"})
@@ -32,6 +37,9 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
                               engine=SimpleNamespace(description="fake"))
         transcript = await run_scenes(bot, 1, 7, "Brandon", list(SCENES))
         assert bot.llm.calls == count_replies(list(SCENES))
+        assert bot.llm.memories >= 7  # every long scene is turned into memories as it goes
+        assert "    (writes a memory: Milo played laser with Whiskers for ages (1).)" in transcript
+        assert "how Whiskers holds up as a scene goes on:" in transcript and "  replies 31+ (" in transcript
         assert "===== catnip =====" in transcript and "Brandon: Here have some catnip *gives catnip*" in transcript
         assert "(scene: scene 1)" in transcript and "Whiskers: *pounces on Angel's feet*" in transcript
         assert "Milo: !play lofi hip hop\nAngel: this song slaps\n" in transcript  # read, not answered
@@ -178,6 +186,31 @@ def test_choosing_scenes():
     assert scenes_for("all") == list(SCENES)
     assert scenes_for("core", "vacuum") == ["vacuum"]
     assert scenes_for(None, "nope") == []
+    # /whiskers simulate offers every pack, every group and "all": Discord allows at most 25 choices
+    assert len(PACKS) + len(GROUPS) + 1 <= 25
+
+
+def test_marathon_scenes_are_long():
+    assert len(PACKS["marathon"]) >= 7
+    for name in PACKS["marathon"]:
+        assert count_replies([name]) >= 35, name
+        assert all(step_parts(step)[0] != "time" for step in PACKS["marathon"][name]), f"{name} must stay one chat"
+
+
+def test_measures_sum_up_a_run():
+    played = [Played("*pounces* MRRP!", 20.0, 1, 0), Played("*tilts head*", 10.0, 2, 1),
+              Played("*starts purring*", 12.0, 11, 0), Played("*looks at Milo*", 14.0, 12, 2)]
+    lines = measures(played)
+    assert lines[0] == "4 replies, 14s average (a scene's first reply 20s, the rest 12s)"
+    assert lines[1] == "sounds: 50% of replies make a cat sound, 25% say one out loud"
+    assert lines[2] == "length: 14 characters on average"
+    assert lines[3] == "passive starts (tilts, looks, stares...): 50%"
+    assert lines[4] == "how Whiskers holds up as a scene goes on:"
+    assert lines[5] == "  replies 1-10 (2): sounds 50% (50% out loud) · 14 characters · passive 50% · 1 warning · 15s"
+    assert lines[6].startswith("  replies 11-20 (2): sounds 50% (0% out loud)")
+    assert len(lines) == 7  # no row for positions nobody reached
+    assert "holds up" not in "\n".join(measures(played[:2]))  # short scenes only
+    assert says_sound("*pads over* mrrp?") and not says_sound("*purrs*")
 
 
 def test_checks_flag_common_problems():

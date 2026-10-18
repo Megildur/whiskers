@@ -352,12 +352,14 @@ class Database:
         return [_row_message(row) for row in reversed(rows)]
 
     async def summary_batch(self, *, full: int = 30, quiet: int = 6, quiet_seconds: float = 2700,
-                            max_rows: int = 40) -> list[StoredMessage]:
-        """The next chunk of chat to turn into memories: a busy channel, or one that has gone quiet."""
+                            max_rows: int = 40, channel_id: int | None = None) -> list[StoredMessage]:
+        """The next chunk of chat to turn into memories: a busy channel, or one that has gone quiet.
+        `channel_id` looks at that channel only."""
         now = time.time()
+        only = " AND channel_id = ?" if channel_id is not None else ""
         async with self.conn.execute(
             "SELECT channel_id, COUNT(*) AS n, MAX(created_at) AS newest FROM messages "
-            "WHERE summarized = 0 GROUP BY channel_id"
+            f"WHERE summarized = 0{only} GROUP BY channel_id", () if channel_id is None else (channel_id,)
         ) as cur:
             channels = await cur.fetchall()
         for row in channels:

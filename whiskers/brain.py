@@ -775,7 +775,7 @@ class Brain:
             return lambda: self._warm_up(*cold)
         rows = await self.db.summary_batch()
         if rows:
-            return lambda: self._summarize(rows)
+            return lambda: self.summarize(rows)
         due = await self.db.reflection_due(self.cfg.reflect_every, self.cfg.reflect_min_hours * 3600)
         if due:
             return lambda: self.reflect(due[0])
@@ -806,7 +806,8 @@ class Brain:
         log.info("Conversation slot %d is warmed up (read %d prompt tokens in %.0fs).", slot, result.prompt_tokens,
                  result.seconds)
 
-    async def _summarize(self, rows: list[StoredMessage]) -> None:
+    async def summarize(self, rows: list[StoredMessage]) -> str | None:
+        """Turn a chunk of chat into a memory and facts about people. Returns the memory, if one was written."""
         guild_id, channel_id = rows[0].guild_id, rows[0].channel_id
         try:
             result = await self.llm.chat(
@@ -819,14 +820,14 @@ class Brain:
                 raise
             log.warning("Skipping a chunk of chat that couldn't be summarised: %s", error)
             await self.db.mark_summarized([r.id for r in rows])
-            return
+            return None
         data = parse_json(result.text) or {}
         people = {r.author_name.lower(): r.author_id for r in rows if not r.is_self}
 
-        summary = str(data.get("summary") or "").strip()
+        summary = str(data.get("summary") or "").strip()[:500]
         if len(summary) >= 12:
             involved = [uid for name, uid in people.items() if name in summary.lower()]
-            await self.db.add_memory(guild_id, channel_id, summary[:500], involved, rows[-1].created_at)
+            await self.db.add_memory(guild_id, channel_id, summary, involved, rows[-1].created_at)
 
         facts = data.get("facts") if isinstance(data.get("facts"), list) else []
         for item in facts[:10]:
@@ -842,6 +843,7 @@ class Brain:
                 await self.db.add_facts(guild_id, user_id, [fact])
         await self.db.mark_summarized([r.id for r in rows])
         log.info("Wrote a memory for channel %s: %s", channel_id, summary or "(nothing worth remembering)")
+        return summary if len(summary) >= 12 else None
 
     async def reflect(self, guild_id: int, reason: str = "evolved") -> str | None:
         """Let the server's influence rewrite Whiskers' journal. Returns the new journal, or None.

@@ -89,7 +89,7 @@ Whiskers only reads and talks where you let it. Nothing happens until you do one
 | `/whiskers chattiness <percent> [channel]` | Manage Server | While roaming, how often Whiskers joins conversations uninvited. Default 5%. 0 means only when called. |
 | `/whiskers options` | Manage Server | Emoji reactions, answering to its name, and pinging on replies. |
 | `/whiskers status` | Manage Server | Settings, brain status, speed and memory counts. |
-| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), all-discord (208 scenes, about 2½ hours) or all (257 scenes, about 3½ hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
+| `/whiskers simulate [pack] [scene]` | Manage Server | Plays test scenes through the model with throwaway memory. Packs: core, home, food, play, mischief, scary, people, character, magic, long-day, feelings, eleven everyday-Discord packs (discord, discord-hello, -to-him, -chatter, -media, -gaming, -chaos, -server, -people, -odd, -busy), marathon (7 long chats, 281 replies, about 2 hours), all-discord (208 scenes, about 2½ hours) or all (264 scenes, about 6 hours). A public message shows live progress; the transcript, with Whiskers' private notes and automatic warnings, is posted in the channel when it's done. |
 | `/whiskers personality edit` | Manage Server | Rewrite the journal by hand. |
 | `/whiskers personality evolve` | Manage Server | Make Whiskers reflect and grow right now. |
 | `/whiskers owner [member]` | Manage Server | Who Whiskers belongs to and adores most. Defaults to the server owner. |
@@ -180,7 +180,7 @@ The commented `.env.example` lists them all. The ones you might change:
 
 ## Testing changes
 
-`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 257 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, and a lot of everyday Discord chat), so most packs take 5 to 25 minutes.
+`/whiskers simulate` plays the same scripted scenes every time, so after changing `personality.txt`, the model or the temperature you can run it again and compare the transcripts. There are 264 scenes in packs (daily life with its human, food, play, mischief, scary things, other people, staying in character when tested, magic, one long day, who it loves and holds grudges against, a lot of everyday Discord chat, and seven marathon chats), so most packs take 5 to 25 minutes.
 
 The **feelings** pack starts some scenes with history (Angel almost loved enough to be chosen, Tearyu having pulled its tail before) and skips ahead in time ("--- The next day ---"), so only what Whiskers remembers about people carries over. Ordinary server chat is where Whiskers spends most of its life, so most scenes are Discord packs (all of them together: `all-discord`):
 
@@ -200,7 +200,23 @@ The **feelings** pack starts some scenes with history (Angel almost loved enough
 
 Lines are written the way people really type, and links, custom emoji and pings go through the same clean-up as real messages (a Tenor link reaches Whiskers as "[sends a gif: cat vibing]"). Whiskers reads every line, sometimes chimes in (marked "chimes in") and answers when someone pings him, says his name or replies to his message (marked "replying to Whiskers").
 
-Each line of the transcript shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. Under each reply it shows how Whiskers felt about the person and its affection for them, and marks when it chooses someone or stops counting them as one of its people. Replies are checked automatically for stock fallback actions, human words that had to be removed (which words, and what the model actually wrote), "I/my" in actions, dog behaviour, touching phones, screens or links, repetition and overly long replies, with a count at the end. The scenes live in `whiskers/simulate.py`. Real chat always goes first: a simulation pauses between replies whenever someone is waiting for Whiskers, and it uses the background cache slot so real channels stay ready.
+The other scenes are a few replies long and start fresh, but real chats run for dozens of messages, and some problems only show up that far in: going quiet, falling into habits, staying in one mood too long, losing the thread, an old memory wandering into the scene. The **marathon** pack tests that with seven continuous chats of 37 to 46 replies each (about 2 hours), modelled on real home-channel chat:
+
+| Scene | What happens |
+|-------|--------------|
+| `laser-marathon` | Milo plays laser for ages: the dot lands on Brandon's foot, on Angel's head and on Whiskers' own tail, gets put away and comes back |
+| `evening-with-human` | A whole evening alone with his human: dinner, TV, the keyboard, play, a belly trap, bed and a 3am crash |
+| `two-at-once` | Angel and Milo compete for him with treats and toys, then his human walks in |
+| `rough-start` | Tearyu pokes him and pulls his tail, gets told off, then spends a long time trying to make up for it |
+| `home-channel-afternoon` | People talk about him out of character, ask how he works and post GIFs, with only some roleplay |
+| `vet-day` | The carrier, the vet, and a long sulk his human has to win him back from |
+| `all-nighter` | A late gaming night where most of the chat isn't about him: a spilled drink, a scare, a 4am wake-up |
+
+As in real chat, every 30 messages the chat so far is turned into a memory, shown as "(writes a memory: ...)", so later replies can draw on it. Memories don't carry over between scenes.
+
+Each line of the transcript shows Whiskers' private note on the scene, which tells you whether a bad reply came from misunderstanding the situation or from how it acted on it. Under each reply it shows how Whiskers felt about the person and its affection for them, and marks when it chooses someone or stops counting them as one of its people. Replies are checked automatically for stock fallback actions, human words that had to be removed (which words, and what the model actually wrote), "I/my" in actions, dog behaviour, touching phones, screens or links, repetition and overly long replies, with a count at the end. The scenes live in `whiskers/simulate.py`, `whiskers/discord_scenes.py` and `whiskers/marathon_scenes.py`.
+
+The summary at the end has the numbers to compare one run with another: the average reply time (split into a scene's first reply, which reads more, and the rest), how many replies make a cat sound and how many say one out loud, the average length, and how many start passively ("tilts", "looks", "stares"...), which is what the model falls back on when it runs out of ideas. When a run has long scenes, a table shows the same numbers for replies 1 to 10, 11 to 20, 21 to 30 and 31 onwards, so you can see whether Whiskers stays himself the longer a chat goes on. Real chat always goes first: a simulation pauses between replies whenever someone is waiting for Whiskers, and it uses the background cache slot so real channels stay ready.
 
 Simulations don't change the model itself. They show where Whiskers goes wrong, and the fixes go into `personality.txt` and the rules and example replies in `whiskers/prompts.py`.
 
