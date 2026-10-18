@@ -186,6 +186,10 @@ class LLMClient:
         if slot is not None:
             self._prefixes[slot] = prefix
 
+    def forget_prefix(self, slot: int | None) -> None:
+        """The slot was used for something else (a chore's own prompt), so it no longer starts with Whiskers' prompt."""
+        self._prefixes.pop(slot, None)
+
     async def close(self) -> None:
         if self._session:
             await self._session.close()

@@ -178,9 +178,9 @@ The commented `.env.example` lists them all. The ones you might change:
 
   After changing it, restart. The new model downloads once; you can delete the old `.gguf` from `models/` to free space.
 - `LLM_THREADS`: CPU threads for the model. Leave it empty; Whiskers reads your plan's CPU limit.
-- `LLM_CONTEXT` and `LLM_SLOTS`: memory for conversations. Each channel Whiskers keeps ready gets 6144 tokens, plus one share for background chores: `30720` with `LLM_SLOTS=4` keeps four channels ready (16 GB server with `nemo-12b`, about 5 GB of RAM), `18432` keeps two, `12288` one, and `8192` suits small servers. Lower it if the server runs out of memory.
+- `LLM_CONTEXT` and `LLM_SLOTS`: memory for conversations. Each channel Whiskers keeps ready gets 6144 tokens, plus one share for background chores: `18432` with `LLM_SLOTS=2` keeps two channels ready (16 GB server with `nemo-12b`), `12288` one, and `8192` suits small servers. `30720` with `LLM_SLOTS=4` keeps four, but needs about 5 GB of RAM for conversations alone: on a 16 GB server running `nemo-12b`, the AI engine crashed under it. Lower it if the server runs out of memory.
 - `LLM_SAVED_CHANNELS`: how many channels that lost their slot are kept on disk to come back quickly (default 4, about 0.5 GB of disk each with `nemo-12b`).
-- `LLM_FLASH_ATTN`: `auto` (default), `on` or `off`. On a CPU, `off` writes faster but reads prompts slower; the log shows each reply's reading and writing speed, so you can compare.
+- `LLM_FLASH_ATTN`: `auto` (default), `on` or `off`. On a CPU, `off` writes a little faster but reads prompts about a fifth slower, and reading is most of a reply's time, so keep `auto`. The log shows each reply's reading and writing speed if you want to compare.
 - `SCENE_NOTE`: `before` (default) or `after`. `after` makes replies several seconds faster but blander; see [How replies stay fast](#how-replies-stay-fast).
 - `TIMEZONE`: so Whiskers knows when it's night (for example `America/New_York`).
 - `CAT_GENDER`: `boy` (default) or `girl`, for the pronouns the story uses.

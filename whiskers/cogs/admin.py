@@ -5,6 +5,7 @@ import asyncio
 import io
 import logging
 import time
+from collections import deque
 from typing import TYPE_CHECKING, Optional, Union
 
 import discord
@@ -43,7 +44,19 @@ def _on(value: bool) -> str:
 
 def _duration(seconds: float) -> str:
     minutes, seconds = divmod(int(seconds), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
     return f"{minutes}m {seconds:02d}s" if minutes else f"{seconds}s"
+
+
+SECONDS_PER_STEP = 28  # a simulated reply plus reading ahead for the next one, with nemo-12b on a CPU
+
+
+def _expected_time(scenes: list[str]) -> str:
+    """Roughly how long a set of scenes takes, for the pack menu."""
+    minutes = count_replies(scenes) * SECONDS_PER_STEP // 60 + 1
+    return f"~{minutes} min" if minutes < 120 else f"~{round(minutes / 60)} h"
 
 
 class SimulationProgress:
@@ -54,6 +67,7 @@ class SimulationProgress:
     """
 
     REPLY_EDIT_LIMIT = 14 * 60
+    PACE_WINDOW = 50  # the time left is worked out from this many recent replies
 
     def __init__(self, interaction: discord.Interaction, total: int, scenes: int) -> None:
         self.interaction = interaction
@@ -66,6 +80,7 @@ class SimulationProgress:
         self.reply_started = time.monotonic()
         self.finished = False
         self._ticker: asyncio.Task | None = None
+        self._finished_at: deque[float] = deque(maxlen=self.PACE_WINDOW)  # when recent replies were done
 
     def start(self) -> None:
         """Refresh the message every 15 seconds while a reply is being written, so it's clearly alive."""
@@ -79,6 +94,14 @@ class SimulationProgress:
     def elapsed(self) -> float:
         return time.monotonic() - self.started
 
+    def time_left(self) -> float | None:
+        """Seconds left at the pace of recent replies. None until there are a few: the first reply of a run
+        can take minutes (a cold cache, chores that were waiting), so it says little about the rest."""
+        times = self._finished_at
+        if len(times) < 3:
+            return None
+        return (times[-1] - times[0]) / (len(times) - 1) * (self.total - self.done)
+
     def text(self, headline: str | None = None) -> str:
         filled = round(20 * self.done / self.total) if self.total else 20
         bar = "▓" * filled + "░" * (20 - filled)
@@ -86,11 +109,11 @@ class SimulationProgress:
             where = (f" · scene {self.last.scene_number} of {self.scenes}: **{self.last.scene}**"
                      if self.last else "")
             headline = f"🧪 **Simulation running**{where}"
-            if self.done:
-                left = self.elapsed() / self.done * (self.total - self.done)
+            left = self.time_left()
+            if left is not None:
                 eta = f" · about {_duration(left)} left"
             else:
-                eta = " · warming up"
+                eta = " · timing the first replies" if self.done else " · warming up"
             headline += f"\n`{bar}` {self.done}/{self.total} replies{eta}"
             waited = time.monotonic() - self.reply_started
             headline += f"\n⏳ writing reply {self.done + 1}/{self.total}… {waited:.0f}s"
@@ -117,6 +140,7 @@ class SimulationProgress:
     async def update(self, step: Step) -> None:
         self.done, self.last = step.done, step
         self.reply_started = time.monotonic()
+        self._finished_at.append(self.reply_started)
         await self._show(self.text())
 
     async def finish(self, headline: str, lines: list[str]) -> None:
@@ -371,15 +395,14 @@ class Admin(commands.GroupCog, group_name="whiskers", group_description="Set up 
                            scene="Play just one scene instead of a pack")
     @app_commands.choices(pack=[
         app_commands.Choice(name=f"{name} ({len(scenes)} scene{'s' if len(scenes) != 1 else ''}, "
-                                 f"~{count_replies(list(scenes)) * 20 // 60 + 1} min)",
+                                 f"{_expected_time(list(scenes))})",
                             value=name)
         for name, scenes in PACKS.items()
     ] + [
-        app_commands.Choice(name=f"{group} ({len(scenes_for(group))} scenes, "
-                                 f"~{count_replies(scenes_for(group)) * 20 // 60} min)", value=group)
+        app_commands.Choice(name=f"{group} ({len(scenes_for(group))} scenes, {_expected_time(scenes_for(group))})",
+                            value=group)
         for group in GROUPS
-    ] + [app_commands.Choice(name=f"all ({len(SCENES)} scenes, ~{count_replies(list(SCENES)) * 20 // 60} min)",
-                             value="all")])
+    ] + [app_commands.Choice(name=f"all ({len(SCENES)} scenes, {_expected_time(list(SCENES))})", value="all")])
     async def simulate(self, interaction: discord.Interaction, pack: Optional[app_commands.Choice[str]] = None,
                        scene: Optional[str] = None) -> None:
         if not self.bot.engine.ready:

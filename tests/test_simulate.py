@@ -258,3 +258,44 @@ def test_real_chores_still_run_during_a_simulation(cfg, tmp_path):
         await db.close()
 
     asyncio.run(go())
+
+
+def test_reading_ahead_in_a_simulation_gives_way_to_real_chat(cfg, tmp_path):
+    class RealChatArrives(FakeLLM):
+        answered = False
+
+        async def answer(self, messages, kwargs):
+            if kwargs.get("max_tokens") == 1 and not hasattr(self, "real"):
+                self.real = asyncio.ensure_future(self.real_reply())
+                await asyncio.sleep(60)  # stopped as soon as someone talks to Whiskers
+            return await super().answer(messages, kwargs)
+
+        async def real_reply(self):
+            async with self.scheduler.reply_turn():
+                self.answered = True
+
+    async def go():
+        db = Database(tmp_path / "real.db")
+        await db.connect()
+        llm = RealChatArrives()
+        bot = SimpleNamespace(cfg=cfg, db=db, llm=llm, scheduler=Scheduler(), user=SimpleNamespace(id=999),
+                              engine=SimpleNamespace(description="fake"))
+        llm.scheduler = bot.scheduler
+        await asyncio.wait_for(run_scenes(bot, 1, 7, "Brandon", ["dinner"]), timeout=10)
+        assert llm.answered
+        await db.close()
+
+    asyncio.run(go())
+
+
+def test_the_time_left_comes_from_recent_replies_not_a_slow_start():
+    from whiskers.cogs.admin import SimulationProgress, _duration
+
+    progress = SimulationProgress(None, 100, 10)
+    progress.done = 1
+    progress._finished_at.append(500.0)  # the first reply took minutes: a cold cache and waiting chores
+    assert progress.time_left() is None and "timing the first replies" in progress.text()
+    progress.done = 3
+    progress._finished_at.extend([520.0, 540.0])
+    assert progress.time_left() == 97 * 20
+    assert _duration(97 * 20) == "32m 20s" and _duration(7 * 3600 + 125) == "7h 02m"

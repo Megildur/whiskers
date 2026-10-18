@@ -765,9 +765,15 @@ class Brain:
 
     async def _ready_slot(self, channel_id: int, system: str) -> int | None:
         """This channel's cache slot, with as much of the prompt as possible already loaded."""
-        if self.slot_key is not None:
-            return self.llm.slot_for(self.slot_key)
-        return await self.llm.ready_slot(channel_id, system)
+        if self.slot_key is None:
+            return await self.llm.ready_slot(channel_id, system)
+        slot = self.llm.slot_for(self.slot_key)
+        if slot is not None and self.llm.cached_prefix(slot) != system:
+            try:  # a simulation's first reply, or one after a chore: copy the prompt in instead of reading it
+                await self.llm.load_system(slot, system)
+            except LLMError as error:
+                log.warning("Couldn't copy Whiskers' prompt into slot %d: %s", slot, error)
+        return slot
 
     async def _context(self, guild_id: int, channel_id: int, rows: list[StoredMessage], author_id: int,
                        owner_id: int, words: list[str]) -> tuple[list[str], set[int], set[int]]:
@@ -930,10 +936,12 @@ class Brain:
     async def summarize(self, rows: list[StoredMessage]) -> str | None:
         """Turn a chunk of chat into a memory and facts about people. Returns the memory, if one was written."""
         guild_id, channel_id = rows[0].guild_id, rows[0].channel_id
+        slot = self.llm.slot_for(CHORES)
         try:
+            self.llm.forget_prefix(slot)
             result = await self.llm.chat(
                 summary_messages(self.name, transcript(rows, self.name), self.pronouns), max_tokens=350,
-                temperature=0.3, json_schema=SUMMARY_SCHEMA, slot=self.llm.slot_for(CHORES),
+                temperature=0.3, json_schema=SUMMARY_SCHEMA, slot=slot,
             )
         except LLMError as error:
             failures = self._chore_failures[rows[0].id] = self._chore_failures.get(rows[0].id, 0) + 1
@@ -982,11 +990,13 @@ class Brain:
         rows = await self.db.recent_guild_messages(guild_id, 40)
         if not journal.can_speak:
             rows = self.as_cat(rows)
+        slot = self.llm.slot_for(CHORES)
+        self.llm.forget_prefix(slot)
         result = await self.llm.chat(
             reflection_messages(self.name, self.personality, journal.text, memories, transcript(rows, self.name, 4000),
                                 can_speak=journal.can_speak, may_learn=may_learn,
                                 owner=await self._owner_name(guild_id), pronouns=self.pronouns, people=people),
-            max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn), slot=self.llm.slot_for(CHORES),
+            max_tokens=500, temperature=0.7, json_schema=reflection_schema(may_learn), slot=slot,
         )
         data = parse_json(result.text)
         if data and isinstance(data.get("journal"), list):

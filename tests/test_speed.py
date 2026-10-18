@@ -320,3 +320,35 @@ def test_warming_up_copies_the_prompt_when_another_slot_has_it(cfg, tmp_path):
         assert llm.cached_prefix(1) == "SYS"
 
     asyncio.run(go())
+
+
+def test_a_simulation_copies_the_prompt_into_the_chore_slot_instead_of_reading_it(cfg, tmp_path):
+    async def go():
+        class Mover(SlotMover):
+            async def answer(self, messages, kwargs):
+                return json.dumps({"scene": "Brandon pets him", "reply": "*purrs*", "feeling": "liked", "about": ""})
+
+        llm = Mover(tmp_path)
+        brain = brain_for(cfg, tmp_path, llm)
+        await brain.db.connect()
+        brain.slot_key = CHORES  # as in a simulation
+        msg = message(mentions_me=True)
+        await brain.observe(msg, GuildSettings(), 0)
+        system = await brain.system_prompt(1)
+        llm.slot_for(5)
+        llm.remember_prefix(0, system)  # a real channel has the prompt
+        chores = llm.slot_for(CHORES)
+
+        await brain.compose(msg, "direct")  # the first reply copies it in: a second instead of two minutes
+        assert llm.actions == [(0, "save", "system.bin"), (chores, "restore", "system.bin")]
+        llm.actions.clear()
+        await brain.compose(msg, "direct")
+        assert llm.actions == []  # still there
+
+        await brain.summarize(await brain.db.recent_messages(10, 20))  # a chore puts its own prompt in the slot
+        assert llm.cached_prefix(chores) is None
+        await brain.compose(msg, "direct")
+        assert llm.actions == [(chores, "restore", "system.bin")]
+        await brain.db.close()
+
+    asyncio.run(go())

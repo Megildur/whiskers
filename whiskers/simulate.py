@@ -597,6 +597,25 @@ async def _real_chores(bot: WhiskersBot) -> None:
         log.exception("A background chore failed during the simulation; it will be retried")
 
 
+async def _write_memory(bot: WhiskersBot, brain: Brain, db: Database, channel_id: int) -> str | None:
+    """Every 30 messages, chat becomes a memory, as in real chat. Real chat goes first: if someone talks to
+    Whiskers meanwhile, the memory is written after a later reply instead."""
+    if not await db.summary_batch(channel_id=channel_id):
+        return None
+    written: list[str | None] = []
+
+    async def write() -> None:
+        batch = await db.summary_batch(channel_id=channel_id)
+        if batch:
+            written.append(await asyncio.wait_for(brain.summarize(batch), timeout=REPLY_TIMEOUT))
+
+    try:
+        await bot.scheduler.run_chore(write)
+    except LLMError as error:
+        log.warning("Simulation: couldn't write a memory: %s", error)
+    return written[0] if written else None
+
+
 async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name: str, scenes: list[str],
                      on_step: Callable[[Step], Awaitable[None]] | None = None,
                      lines: list[str] | None = None) -> str:
@@ -676,17 +695,6 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                     )
                 seconds = (posted[0] if posted else time.monotonic()) - started
                 await brain.record_own_message(msg, next(ids), reply, time.time(), unprompted=kind == "mischief")
-                memory = None
-                async with bot.scheduler.background_turn():  # as in real chat while people type; not timed
-                    batch = await db.summary_batch(channel_id=channel_id)
-                    if batch:  # every 30 messages, chat becomes memories, as in real chat
-                        try:
-                            memory = await asyncio.wait_for(brain.summarize(batch), timeout=REPLY_TIMEOUT)
-                        except LLMError as error:
-                            log.warning("Simulation: couldn't write a memory: %s", error)
-                await _real_chores(bot)
-                async with bot.scheduler.background_turn():
-                    await asyncio.wait_for(brain.prepare_next(msg), timeout=REPLY_TIMEOUT)
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
                 found = checks(reply, raw, replies, ignore=props)
                 replies.append(reply)
@@ -710,14 +718,19 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                     for warning in found:
                         kind = warning.split(":")[0].split(" (")[0]
                         flagged[kind] = flagged.get(kind, 0) + 1
-                if memory:
-                    lines.append(f"    (writes a memory: {memory})")
-                lines.append("")
                 done += 1
                 log.info("Simulation %d/%d (%s): %s -> %s", done, total, name, text, reply)
                 if on_step:
                     await on_step(Step(done, total, name, number + 1, len(scenes), user_name, text, note, reply,
                                        seconds))
+                # Untimed work between replies, as in real chat while people type. Each step is a chore: it
+                # waits while real chat is going on and stops as soon as someone talks to Whiskers.
+                memory = await _write_memory(bot, brain, db, channel_id)
+                if memory:
+                    lines.append(f"    (writes a memory: {memory})")
+                lines.append("")
+                await _real_chores(bot)
+                await bot.scheduler.run_chore(lambda: asyncio.wait_for(brain.prepare_next(msg), REPLY_TIMEOUT))
             if lines[-1]:
                 lines.append("")
             feelings_now = [f"{p.name} {p.affection:+.0f}" + (" (human)" if p.user_id == owner_id else "")
