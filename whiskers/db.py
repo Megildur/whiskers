@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -19,6 +20,25 @@ import aiosqlite
 log = logging.getLogger("whiskers.db")
 
 MAX_FACTS = 12
+# How much each feeling about a thing counts towards whether Whiskers likes it overall, so one bad moment
+# doesn't undo three good ones ("laser off" after an afternoon of loving the laser).
+FEELING_WEIGHT = {"loved": 2, "liked": 1, "neutral": 0, "disliked": -1, "hated": -2}
+# Someone being mean to Whiskers, as opposed to him just not enjoying something (a bath, being put down, a game
+# ending, someone leaving). Only this makes him trust a person less.
+MISTREATMENT = re.compile(
+    r"\b(hit|hits|hitting|smack\w*|slap\w*|punch\w*|kick\w*|thr[eo]w\w*|toss\w*|shov\w*|push(es|ed|ing)?|yank\w*|"
+    r"pull(s|ed|ing)? (his |my |her |your |the )?(tail|ears?|whiskers|fur)|tail pull\w*|"
+    r"grab\w* (his |my |her |your |the )?tail|squeez\w*|pinch\w*|pok(e|es|ed|ing)|flick\w*|step(s|ped|ping)? on|"
+    r"stomp\w*|spray\w*|squirt\w*|water bottle|yell\w*|scream\w* at|shout\w* at|scar(e|es|ed|ing)|spook\w*|"
+    r"startl\w*|trap\w*|lock(s|ed|ing)? (him|me|in|out)|blow(s|n|ing)? in|blew in|hurt\w*|mean|cruel\w*|rough\w*|"
+    r"abus\w*|insult\w*|called names|being called|name.calling|bull(y|ied|ying)|chas(e|ed|ing) (him|me)|"
+    r"being chased|cornered|kidnap\w*|catnap\w*)\b",
+    re.I,
+)
+
+
+def mistreated(text: str) -> bool:
+    return bool(MISTREATMENT.search(text or ""))
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS guild_settings (
@@ -80,6 +100,10 @@ CREATE TABLE IF NOT EXISTS profiles (
     feelings TEXT NOT NULL DEFAULT '[]',
     chosen INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (guild_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS journal (
     guild_id INTEGER PRIMARY KEY,
@@ -181,10 +205,15 @@ class Memory:
 
 @dataclass
 class Feeling:
-    """Something a person did that Whiskers loved, liked, disliked or hated."""
+    """Something a person did that Whiskers loved, liked, disliked or hated, and how he feels about it overall."""
     about: str  # "belly rubs", "tail pulling"
-    feeling: str
+    feeling: str  # the most recent time
     at: float
+    score: int | None = None  # the feelings about it added up (FEELING_WEIGHT): above 0 he likes it overall
+
+    def __post_init__(self) -> None:
+        if self.score is None:
+            self.score = FEELING_WEIGHT.get(self.feeling, 0)
 
 
 @dataclass
@@ -218,7 +247,7 @@ def _row_message(row) -> StoredMessage:
 
 
 def _row_profile(row) -> Profile:
-    feelings = [Feeling(f["about"], f["feeling"], f["at"]) for f in json.loads(row["feelings"] or "[]")]
+    feelings = [Feeling(f["about"], f["feeling"], f["at"], f.get("score")) for f in json.loads(row["feelings"] or "[]")]
     return Profile(row["user_id"], row["name"], json.loads(row["facts"]), row["chats"], row["first_seen"],
                    row["last_seen"], row["affection"], feelings, bool(row["chosen"]))
 
@@ -226,6 +255,18 @@ def _row_profile(row) -> Profile:
 def similar(a: str, b: str) -> bool:
     a, b = a.lower().strip(" ."), b.lower().strip(" .")
     return a == b or a in b or b in a
+
+
+FILLER = frozenset("being getting having with from that this into onto over under about after before their there "
+                   "them they your yours".split())
+
+
+def same_thing(a: str, b: str) -> bool:
+    """Whether two feelings are about the same thing: "laser pointer" and "laser off", "bath" and "bath time"."""
+    if similar(a, b):
+        return True
+    words = [{w for w in re.findall(r"[a-z]{4,}", text.lower()) if w not in FILLER} for text in (a, b)]
+    return bool(words[0] & words[1])
 
 
 class Database:
@@ -265,6 +306,31 @@ class Database:
                 if column not in existing:
                     await self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
         await self.conn.execute("UPDATE journal SET born_at = ? WHERE born_at = 0", (time.time(),))
+        async with self.conn.execute("SELECT value FROM meta WHERE key = 'fair-feelings'") as cur:
+            done = await cur.fetchone()
+        if not done:
+            await self._forgive_misjudged()
+            await self.conn.execute("INSERT INTO meta (key, value) VALUES ('fair-feelings', ?)", (str(time.time()),))
+
+    async def _forgive_misjudged(self) -> None:
+        """Once, for a database from before feelings were judged fairly. Every dislike used to cost someone
+        affection, even them leaving or a game ending, so Whiskers ended up wary of his friends. Give back what
+        the remembered ones took, and forget a grudge with no real mistreatment behind it."""
+        old_cost = {"disliked": 12, "hated": 25}
+        async with self.conn.execute("SELECT guild_id, user_id, name, affection, feelings FROM profiles") as cur:
+            rows = await cur.fetchall()
+        for row in rows:
+            feelings = json.loads(row["feelings"] or "[]")
+            unfair = sum(old_cost.get(f["feeling"], 0) for f in feelings if not mistreated(f["about"]))
+            hurt = any(f["feeling"] in old_cost and mistreated(f["about"]) for f in feelings)
+            affection = min(100.0, row["affection"] + unfair)
+            if affection < 0 and not hurt:
+                affection = 0.0
+            if affection != row["affection"]:
+                await self.conn.execute("UPDATE profiles SET affection = ? WHERE guild_id = ? AND user_id = ?",
+                                        (affection, row["guild_id"], row["user_id"]))
+                log.info("Whiskers forgave %s for dislikes that weren't their fault: affection %+.0f -> %+.0f.",
+                         row["name"], row["affection"], affection)
 
     async def close(self) -> None:
         if self._conn:

@@ -441,6 +441,8 @@ class Played:
     seconds: float
     position: int  # how many replies into its scene: 1 for the first
     warnings: int
+    feeling: str = "neutral"  # how what the person did felt to Whiskers
+    held_against: bool = False  # a dislike that cost them his trust
 
 
 def says_sound(reply: str) -> bool:
@@ -471,6 +473,9 @@ def measures(played: list[Played]) -> list[str]:
         f"{_percent(sum(says_sound(p.reply) for p in played), n)} say one out loud",
         f"length: {average([len(p.reply) for p in played])} characters on average",
         f"passive starts (tilts, looks, stares...): {_percent(sum(bool(PASSIVE_START.match(p.reply)) for p in played), n)}",
+        "feelings: " + ", ".join(f"{sum(p.feeling == f for p in played)} {f}"
+                                 for f in ("loved", "liked", "neutral", "disliked", "hated"))
+        + f"; {sum(p.held_against for p in played)} held against someone (only real mistreatment should be)",
     ]
     if any(p.position > HOLDING_UP[0][1] for p in played):
         lines.append("how Whiskers holds up as a scene goes on:")
@@ -751,8 +756,10 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 felt = brain.last_feeling(channel_id)
                 if felt and felt[0] != "neutral":
                     feeling, about, affection, change = felt
+                    held = feeling in ("disliked", "hated") and brain.mean_to_him(about, text)
+                    played[-1].feeling, played[-1].held_against = feeling, held
                     lines.append(f"    (feels {feeling} about {user_name}{': ' + about if about else ''} · "
-                                 f"affection {affection:+.0f})")
+                                 f"affection {affection:+.0f}{' · held against them' if held else ''})")
                     if change == "chosen":
                         lines.append(f"    ★ {cat} chose {user_name} as one of {brain.pronouns['his']} people")
                     elif change == "dropped":

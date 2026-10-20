@@ -253,7 +253,9 @@ def test_how_whiskers_treats_people_follows_how_they_treated_it(cfg):
     from whiskers.db import Feeling, Profile
 
     assert relationship(40, affection=-20).startswith("you don't trust them")
+    assert relationship(40, affection=-12).startswith("a good friend")  # one bad moment isn't distrust
     assert relationship(40, affection=-50).startswith("you can't stand them")
+    assert "not scared of them" in relationship(0)  # someone new is met with curiosity, not fear
     assert relationship(3, affection=40).startswith("you really like them")
     assert relationship(3, affection=40, chosen=True).startswith("one of your chosen people")
     assert relationship(3, is_owner=True, affection=-50).startswith("your human")
@@ -264,7 +266,14 @@ def test_how_whiskers_treats_people_follows_how_they_treated_it(cfg):
     notes = brain.context_notes(0, [rough], [], news=["Tearyu did something"], now=86400.0)
     line = next(n for n in notes if n.startswith("Tearyu:"))
     assert "you don't trust them" in line
-    assert line.endswith("You hated tail pulling (10 minutes ago); liked a treat (1 day ago).")
+    assert line.endswith("You love a treat with them. You don't like tail pulling. "
+                         "You're still sore about the tail pulling (10 minutes ago).")
+    later = brain.person_note(rough, 0, 86400.0 * 2)
+    assert "still sore" not in later and "You don't like tail pulling." in later  # the sulk passes, the dislike stays
+    friend = Profile(3, "Kenobi", chats=30, affection=40,
+                     feelings=[Feeling("laser pointer", "loved", 0.0, 6), Feeling("bath", "disliked", 10.0)])
+    line = brain.person_note(friend, 0, 86400.0)
+    assert "You love laser pointer with them. You don't like bath." in line and "sore" not in line
     assert "Tearyu did something" in notes
     assert brain.reply_note(incoming("hi kitty", author=2), "direct").endswith('Your "feeling" is about user2.')
 
@@ -416,10 +425,10 @@ def test_feelings_add_up_until_whiskers_chooses_someone_and_hurt_undoes_it(cfg, 
 
         brain.llm.reply = json.dumps({"scene": "salmon!", "feeling": "loved", "about": "salmon.", "reply": "*eats*"})
         await brain.compose(msg, "direct")
-        assert brain.last_feeling(10) == ("loved", "salmon", 56.0, None)
-        await brain.compose(msg, "direct")  # the same thing again replaces the old memory of it
+        assert brain.last_feeling(10) == ("loved", "salmon", 55.0, None)
+        await brain.compose(msg, "direct")  # the same thing again adds up in one memory of it
         angel = await brain.db.profile(1, 5)
-        assert (angel.affection, angel.chosen, [f.about for f in angel.feelings]) == (62.0, True, ["salmon"])
+        assert (angel.affection, angel.chosen, [(f.about, f.score) for f in angel.feelings]) == (60.0, True, [("salmon", 4)])
         assert brain.last_feeling(10)[3] == "chosen"
 
         brain.llm.reply = json.dumps({"scene": "x", "feeling": "neutral", "about": "", "reply": "*naps*"})
@@ -429,17 +438,27 @@ def test_feelings_add_up_until_whiskers_chooses_someone_and_hurt_undoes_it(cfg, 
         assert "You've just decided that user5 is one of your people now" in last_turn
         assert "user5" not in system  # the notes say who's chosen, so the cached system prompt stays the same
         assert "user5: one of your chosen people" in last_turn
-        assert (await brain.db.profile(1, 5)).affection == 62.0  # neutral changes nothing
+        assert (await brain.db.profile(1, 5)).affection == 60.0  # neutral changes nothing
+
+        brain.llm.reply = json.dumps({"scene": "x", "feeling": "disliked", "about": "being put down", "reply": "*sulks*"})
+        await brain.compose(msg, "direct")  # something he didn't enjoy, but nobody was mean to him
+        angel = await brain.db.profile(1, 5)
+        assert angel.affection == 60.0 and ("being put down", -1) in [(f.about, f.score) for f in angel.feelings]
 
         brain.llm.reply = json.dumps({"scene": "x", "feeling": "hated", "about": "water spray", "reply": "*hisses*"})
         await brain.compose(msg, "ambient")  # chiming in on someone's chat doesn't count
-        assert (await brain.db.profile(1, 5)).affection == 62.0 and brain.last_feeling(10) is None
+        assert (await brain.db.profile(1, 5)).affection == 60.0 and brain.last_feeling(10) is None
         await brain.compose(msg, "direct")
-        assert brain.last_feeling(10)[2:] == (37.0, "dropped")  # hurt counts straight away
+        assert brain.last_feeling(10)[2:] == (45.0, None)  # being hurt counts straight away, but one spray
+        await brain.compose(msg, "direct")  # doesn't undo a friendship
+        await brain.compose(msg, "direct")  # and one bad day takes away at most DAILY_COOLING
+        angel = await brain.db.profile(1, 5)
+        assert (angel.affection, angel.chosen) == (30.0, True)
+        brain._cooled[(1, 5)] = (0, 30.0)  # the next day, it happens again
         await brain.compose(msg, "direct")
         angel = await brain.db.profile(1, 5)
-        assert (angel.affection, angel.chosen) == (12.0, False)
-        assert [f.about for f in angel.feelings] == ["salmon", "water spray"]
+        assert (angel.affection, angel.chosen) == (15.0, False) and brain.last_feeling(10)[3] == "dropped"
+        assert [f.about for f in angel.feelings] == ["salmon", "being put down", "water spray"]
         await brain.db.close()
 
     asyncio.run(go())
@@ -463,7 +482,7 @@ def test_whiskers_human_is_never_chosen_and_a_sound_can_repeat(cfg, tmp_path):
         assert human.affection == 15.0 and not human.chosen  # kindness only adds up so far in one day
         brain._warmed[(1, 8)] = (0, 15.0)  # a new day
         await brain.feel(msg, "loved", "tuna")
-        assert (await brain.db.profile(1, 8)).affection == 21.0
+        assert (await brain.db.profile(1, 8)).affection == 20.0
         assert sent[:3] == ["*eats* MRRP!"] * 3  # a happy cat may well say so every time
         await brain.db.close()
 
@@ -523,6 +542,7 @@ def test_whiskers_starts_mischief_when_a_home_channel_goes_quiet(cfg, tmp_path):
         assert await brain.respond(job, typing, deliver) == "*steals Brandon's sock and runs*"
         note = next(call[0][-1]["content"] for call in brain.llm.calls if call[1].get("json_schema"))
         assert "It has gone quiet" in note and "start some mischief of your own" in note and "user8" in note
+        assert "This time: " in note and "keyboard" not in note
         assert (await brain.db.profile(1, 8)).affection == 0  # nobody did anything to him
         assert (await brain.db.last_unprompted(10))[1] is None  # remembered as his own idea, not yet answered
         await brain.db.close()
@@ -631,3 +651,40 @@ def test_mischief_waits_for_an_answer_and_even_longer_when_ignored(cfg, tmp_path
         await db.close()
 
     asyncio.run(go())
+
+
+def test_a_bad_moment_with_something_he_loves_doesnt_turn_it_into_a_dislike(cfg, tmp_path):
+    import asyncio
+
+    from whiskers.brain import likes_and_dislikes
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, "")
+        await brain.db.connect()
+        msg = incoming("*waves the laser around*", author=5, mentions_me=True, owner_id=8)
+        await brain.observe(msg, GuildSettings(), 0)
+        for feeling, about in [("loved", "laser pointer"), ("loved", "chasing the laser"), ("disliked", "laser off")]:
+            await brain.feel(msg, feeling, about)
+        milo = await brain.db.profile(1, 5)
+        assert [(f.about, f.score) for f in milo.feelings] == [("laser pointer", 3)]
+        assert likes_and_dislikes(milo.feelings) == (["laser pointer"], [])
+        assert milo.affection == 10.0  # the laser going off isn't Milo being mean
+
+        await brain.feel(incoming("*yanks your tail*", author=5, mentions_me=True, owner_id=8), "hated", "tail")
+        assert (await brain.db.profile(1, 5)).affection == -5.0  # this is
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_mischief_ideas_change_and_skip_what_he_did_lately(cfg):
+    from whiskers.brain import MISCHIEF_IDEAS
+
+    brain = make_brain(cfg, rng=random.Random(3))
+    ideas = {brain.mischief_idea([]) for _ in range(40)}
+    assert len(ideas) >= 10  # not the same antic every time
+    lately = ["*steals Brandon's sock and runs*", "*hides in the laundry basket*"]
+    for _ in range(40):
+        idea = brain.mischief_idea(lately)
+        assert "sock" not in idea and "box or bag" not in idea
+    assert all("keyboard" not in idea for _, idea in MISCHIEF_IDEAS)

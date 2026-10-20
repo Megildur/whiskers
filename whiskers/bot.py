@@ -26,6 +26,7 @@ EXTENSIONS = ("whiskers.cogs.chat", "whiskers.cogs.admin", "whiskers.cogs.public
 # Chores (writing memories, updating the journal) wait for a quiet moment, and anyone talking to Whiskers
 # interrupts them. A very active server may never have one, so after this long a chore takes its turn in the
 # reply queue instead, and replies wait a couple of minutes for it.
+CHORE_AFTER_QUIET = 60  # seconds without a reply before a chore starts: sooner, and the next message often stops it
 CHORE_MAX_WAIT = 15 * 60
 CAT_ACTIVITIES = [
     "chasing a laser dot", "napping in a sunbeam", "knocking things off the table", "staring at the wall",
@@ -131,7 +132,7 @@ class WhiskersBot(commands.Bot):
                     log.info("Whiskers has been too busy for his background chores for %.0f minutes, so one takes "
                              "its turn now.", (time.monotonic() - waiting_since) / 60)
                     done = await self.scheduler.run_chore(chore, take_turn=True)
-                elif self.scheduler.idle_for() >= 30:
+                elif self.scheduler.idle_for() >= CHORE_AFTER_QUIET:
                     done = await self.scheduler.run_chore(chore)
                 else:
                     continue

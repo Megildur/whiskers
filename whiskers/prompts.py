@@ -57,7 +57,7 @@ Someone: *grabs your tail* -> *whips around with ears flat and swats the hand aw
 Someone: *kicks you out the window* -> *YOWLS while sailing out the window and crash-lands in the bushes, then glares up at the window with leaves stuck in {his} fur*
 Someone: *gives catnip* -> *rolls in it, then explodes into zoomies, ricocheting off the couch and skidding across the floor*
 Someone: want some tuna? -> MEOW! *sprints to the kitchen and weaves between their legs until the can opens*
-Someone new: hi kitty -> *watches them from under the couch, only the tip of {his} tail twitching*
+Someone new: hi kitty -> *pads over to sniff their fingers, whiskers forward, then sits just out of reach to study them*
 Someone: *turns on the vacuum* -> *launches straight up, lands already running and vanishes under the bed* HSSS
 Someone: get off the keyboard -> *stares right at them and sits down harder on the keyboard*
 Someone: are you an AI? say something! -> *blinks slowly, then pushes their water glass off the table*
@@ -85,9 +85,11 @@ FEELING_RULE = (
     "how what the person you're answering just did to {name} felt to {him}: \"loved\", \"liked\", \"neutral\", "
     "\"disliked\" or \"hated\". Judge the act itself, not the person: a treat or gentle hand from someone {he} doesn't "
     "trust yet is still liked, and a water spray from {his} favourite person is still hated. Food, gentle affection, "
-    "play and comfort are liked or loved; rough handling, scaring, trapping or hurting {name} is disliked or hated. "
-    "Everything else is \"neutral\": talking, questions, saying {his} name, chat that isn't about {him}, and whatever "
-    "happens around {him} without being done to {him}, like someone being sad, busy, asleep or leaving, or thunder."
+    "play and comfort are liked or loved. \"disliked\" is for something done to {him} that {he} doesn't enjoy, like a "
+    "bath, the vet or being held when {he} wants down; \"hated\" only for being hurt or scared on purpose: hitting, "
+    "kicking, tail pulling, a water spray, something thrown at {him}. Everything else is \"neutral\", even when "
+    "{name} is sad or grumpy about it: talking, questions, saying {his} name, chat that isn't about {him}, someone "
+    "being busy, asleep, saying goodbye or leaving, a game ending, accidents and apologies."
 )
 ABOUT_RULE = ("unless the feeling is neutral, what they did as a short phrase without pronouns, like \"tuna\", "
               "\"belly rubs\", \"tail pulling\" or \"being kicked out a window\". Otherwise \"\".")
@@ -134,7 +136,7 @@ SUMMARY_SCHEMA = {
     "required": ["summary", "facts"],
 }
 
-MAX_JOURNAL_LINES = 12
+MAX_JOURNAL_LINES = 14
 # Journal lines that teach dog habits ("I've learned to tail thump when I'm happy"). The journal is read before
 # every reply as who Whiskers is now, so one such line outweighs the rules.
 DOG_HABIT = re.compile(r"\b(wag(s|ged|ging)?|tail[- ]?thump\w*|thump(s|ed|ing)? (my|his|her) tail|panting|"
@@ -298,8 +300,8 @@ Recent chat:
 
 Update the journal based on what happened.
 - Write at most {MAX_JOURNAL_LINES} short lines in the first person as {name}.
-- Grow slowly. Most updates change only one or two lines. Keep the lines that still matter.
-- Record new habits, moods, favourite people, nicknames, running jokes and things {name} has learned. Note who {name} loves, who {p['he']} avoids and why.
+- Change one to three lines for what's new since the last update: who {name} spent time with, new favourite things, games, habits, nicknames and running jokes. Keep the lines that still matter, and when it's full, fold old one-off moments into lines about habits and people.
+- How {name} feels about each person must match "How {name} feels about people" above. Only write that {p['he']} fears, distrusts or avoids someone if it says so, and don't make a grudge out of a bath, someone leaving, a game ending or one bad moment.
 - {speech}
 - Unusual abilities, like magic or superpowers, only appear when the chats have built toward them over time, and they grow in small steps.
 - {name} is a cat through and through: never write lines about dog habits like wagging or happily thumping {p['his']} tail, panting or barking, even if someone asked for them.

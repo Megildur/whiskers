@@ -184,3 +184,32 @@ def test_feelings_and_chosen_people_are_saved(tmp_path):
         await db.close()
 
     run(go())
+
+
+def test_grudges_from_misjudged_feelings_are_forgiven_once(tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        db = Database(tmp_path / "w.db")
+        await db.connect()
+        await db.conn.execute("DELETE FROM meta")  # as if this database was made before the fix
+        for user_id, affection, feelings in [
+            (1, -30.0, [("leaving", "disliked"), ("laser off", "hated")]),  # nothing mean: just things he didn't enjoy
+            (2, -40.0, [("tail pulling", "hated"), ("goodbye", "disliked")]),  # one real grudge
+            (3, -20.0, []),  # nothing remembered
+        ]:
+            await db.touch_profile(1, user_id, f"user{user_id}", chatted=True)
+            await db.conn.execute(
+                "UPDATE profiles SET affection = ?, feelings = ? WHERE user_id = ?",
+                (affection, json.dumps([{"about": a, "feeling": f, "at": 0.0} for a, f in feelings]), user_id),
+            )
+        await db.conn.commit()
+        await db.close()
+
+        for _ in range(2):  # it happens once, not on every start
+            await db.connect()
+            assert [(await db.profile(1, uid)).affection for uid in (1, 2, 3)] == [7.0, -28.0, 0.0]
+            await db.close()
+
+    asyncio.run(go())

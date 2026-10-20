@@ -259,6 +259,10 @@ class ManagedEngine(Engine):
             ("--no-kv-unified", []),
             ("--cache-reuse", ["256"]),  # reuse cached chat history even after the window moves
             ("--cache-ram", [str(self.cfg.llm_cache_ram_mb)]),  # default is 8 GB, far too much here
+            # llama-server reads a prompt this many tokens at a time and only stops a cancelled request (a
+            # background chore someone interrupted) between chunks. The default 2048 is up to two minutes on a
+            # CPU, which a reply then waits out; 512 is the size it computes in anyway, so it reads no slower.
+            ("-b", ["512"]),
         ]
         if self.cfg.llm_flash_attn in ("on", "off"):  # on a CPU, "on" reads prompts faster but writes slower
             optional.append(("--flash-attn", [self.cfg.llm_flash_attn]))

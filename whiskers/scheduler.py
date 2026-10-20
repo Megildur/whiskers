@@ -7,9 +7,13 @@ talks to Whiskers, the chore is cancelled and retried later, and a simulation wa
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Awaitable, Callable
+
+
+log = logging.getLogger("whiskers.scheduler")
 
 
 class Scheduler:
@@ -81,6 +85,7 @@ class Scheduler:
             finally:
                 self._chore = None
             if chore.cancelled():
+                log.info("A reply came in, so a background chore stopped; it's tried again later.")
                 return False
             chore.result()  # re-raise the chore's own error, if any
             return True

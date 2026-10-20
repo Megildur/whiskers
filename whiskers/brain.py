@@ -16,7 +16,10 @@ from datetime import datetime, timezone
 from typing import AsyncContextManager, Awaitable, Callable
 
 from .config import Config
-from .db import ChannelRule, Database, Feeling, GuildSettings, Journal, Memory, Profile, StoredMessage, similar
+from .db import (
+    FEELING_WEIGHT, ChannelRule, Database, Feeling, GuildSettings, Journal, Memory, Profile, StoredMessage, mistreated,
+    same_thing,
+)
 from .llm import CHORES, ChatResult, LLMClient, LLMError, parse_json
 from .prompts import (
     PRONOUNS, SCENE_LIMIT, SUMMARY_SCHEMA, journal_from_lines, load_personality, parse_journal, prefill_messages,
@@ -70,14 +73,19 @@ SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to commu
 
 # How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
 # counts for more than a treat, so one kick out of a window takes a few kind days to make up for.
-FEELING_EFFECT = {"loved": 6, "liked": 3, "neutral": 0, "disliked": -12, "hated": -25}
+# How a feeling changes Whiskers' affection for someone. Dislikes only count when the person was mean to him
+# (db.MISTREATMENT): not enjoying a bath, being put down or someone leaving doesn't make him trust them less.
+FEELING_EFFECT = {"loved": 5, "liked": 3, "neutral": 0, "disliked": -6, "hated": -15}
 DAILY_WARMING = 15  # most affection kindness can add per person per day: trust is earned over days
+DAILY_COOLING = 30  # most affection hurt can take away per person per day: one bad day doesn't undo a friendship
 CHOOSE_AT = 60  # affection at which Whiskers picks someone as one of its people, next to its human
-UNCHOOSE_BELOW = 40  # and below which they stop being one
+UNCHOOSE_BELOW = 30  # and below which they stop being one, well apart so a rough moment doesn't flip it back
 CHOOSE_MIN_CHATS = 8
 MAX_CHOSEN = 3
-MAX_FEELINGS = 10  # things remembered per person
-WARY_AT = -12
+MAX_FEELINGS = 16  # things remembered per person; feelings about the same thing add up in one
+WARY_AT = -20  # takes being hurt more than once, or badly
+CANT_STAND_AT = -45
+RECENT_HURT = 6 * 3600  # Whiskers sulks this long after someone hurt him
 QUIET_AFTER = 4  # messages in a row without a cat sound before Whiskers is reminded it has a voice
 
 
@@ -94,6 +102,34 @@ MISCHIEF = {
     "sometimes": MischiefLevel(gap=3 * 3600, chance=1 / 30, nudge=0.12),
     "often": MischiefLevel(gap=3600, chance=1 / 10, nudge=0.25),
 }
+# Things Whiskers might start on his own, with the words that show he's done one lately. One is picked at
+# random each time, skipping any he did recently, so a quiet channel doesn't get the same antic over and over.
+MISCHIEF_IDEAS: list[tuple[str, str]] = [
+    ("sock", "steal a sock and parade it past everyone before sprinting off with it"),
+    ("ankle ankles ambush", "ambush someone's ankles from under the couch"),
+    ("toy lap", "drop a toy in someone's lap and stare at them until they throw it"),
+    ("zoomies", "get the zoomies: tear through the room, ricocheting off the furniture"),
+    ("spot seat warm", "steal someone's warm spot the moment they shift"),
+    ("shelf", "climb to the highest shelf and survey everyone like a king"),
+    ("cup glass mug", "push a cup slowly toward the edge of a table, staring at its owner"),
+    ("book paper papers", "sit right on top of whatever someone is reading"),
+    ("plant leaves", "attack the leaves of a houseplant"),
+    ("gift mouse cap", "bring someone a gift: a bottle cap, a toy mouse or a crumpled receipt"),
+    ("box bag basket", "hide in a box or bag and pounce on whoever walks past"),
+    ("doorway nothing", "yowl dramatically at an empty doorway, then act as if nothing happened"),
+    ("fridge", "bat something small under the fridge, then demand that someone fetch it"),
+    ("tail", "chase {his} own tail until {he} topples over"),
+    ("bowl", "loudly demand food at an empty bowl while staring at someone"),
+    ("slipper shoe", "drag a slipper off to a secret hiding spot"),
+    ("blanket knead", "knead and chew on the blanket someone is using"),
+    ("curtain curtains", "climb the curtains and refuse to come down"),
+    ("walkway flop", "flop down in the middle of the walkway so everyone has to step over {him}"),
+    ("fly shadow dust", "stalk a fly, a shadow or a speck of dust with deadly seriousness"),
+    ("hair sleeve", "groom someone's hair or sleeve until it's soggy"),
+    ("tissue tissues paper", "pull tissues out of the box one by one"),
+    ("bag chips crinkle", "stick {his} whole head in a crinkly bag and wander around wearing it"),
+    ("pen pens", "steal a pen and bat it across the floor"),
+]
 MISCHIEF_QUIET = 5 * 60  # Whiskers starts something when nobody has said anything for this long...
 MISCHIEF_AROUND = 45 * 60  # ...but someone was talking within this, so there's somebody to bother
 MISCHIEF_IGNORED = 20 * 60  # nobody said anything this long after one: the next waits twice the usual gap
@@ -180,7 +216,7 @@ def relationship(chats: int, is_owner: bool = False, affection: float = 0.0, cho
         return "your human, the person you love most in the world"
     if chosen:
         return "one of your chosen people: you love them almost as much as your human"
-    if affection <= -40:
+    if affection <= CANT_STAND_AT:
         return "you can't stand them after how they've treated you: you hiss, swat or stalk off when they come near"
     if affection <= WARY_AT:
         return "you don't trust them after how they've treated you: ears back, you keep your distance, but kindness can win you back"
@@ -192,7 +228,8 @@ def relationship(chats: int, is_owner: bool = False, affection: float = 0.0, cho
         return "you like them and are happy to see them"
     if chats >= 2 or affection >= 5:
         return "you're getting to know them and starting to like them"
-    return "new to you: you're curious about them and a little shy, but friendly"
+    return ("new to you: you're curious about them and friendly, just a little reserved until you know them better. "
+            "You're not scared of them: they've given you no reason to be")
 
 
 def relationship_label(chats: int, is_owner: bool = False, affection: float = 0.0, chosen: bool = False) -> str:
@@ -201,7 +238,7 @@ def relationship_label(chats: int, is_owner: bool = False, affection: float = 0.
         return "its human"
     if chosen:
         return "one of its chosen people"
-    if affection <= -40:
+    if affection <= CANT_STAND_AT:
         return "someone it can't stand"
     if affection <= WARY_AT:
         return "someone it doesn't trust"
@@ -217,10 +254,12 @@ def relationship_label(chats: int, is_owner: bool = False, affection: float = 0.
 
 
 def likes_and_dislikes(feelings: list[Feeling]) -> tuple[list[str], list[str]]:
-    """What someone did that Whiskers liked, and what it didn't, newest first."""
-    newest = list(reversed(feelings))
-    return ([f.about for f in newest if f.feeling in ("loved", "liked")],
-            [f.about for f in newest if f.feeling in ("disliked", "hated")])
+    """What Whiskers enjoys with someone and what he doesn't, overall, the strongest feelings first. A thing
+    he has loved several times stays a like after one bad moment with it."""
+    newest = list(reversed(feelings))  # among equally strong feelings, the most recent first
+    liked = sorted((f for f in newest if f.score > 0), key=lambda f: -f.score)
+    disliked = sorted((f for f in newest if f.score < 0), key=lambda f: f.score)
+    return [f.about for f in liked], [f.about for f in disliked]
 
 
 class Brain:
@@ -237,7 +276,9 @@ class Brain:
         self.user_id = 0  # the bot's Discord ID, set once logged in
         self._name_pattern = re.compile(rf"\b{re.escape(cfg.bot_name)}\b", re.I)
         cat = rf"(cat|kitty|bot|{re.escape(cfg.bot_name)})"
-        insults = re.compile(rf"\b{INSULT}\b.{{0,20}}\b{cat}\b|\b{cat}\b.{{0,20}}\b{INSULT}\b|\bbad (cat|kitty)\b", re.I)
+        name_calling = rf"\b{INSULT}\b.{{0,20}}\b{cat}\b|\b{cat}\b.{{0,20}}\b{INSULT}\b"
+        self._name_calling = re.compile(name_calling, re.I)  # mean, unlike "bad kitty" for knocking a glass over
+        insults = re.compile(rf"{name_calling}|\bbad (cat|kitty)\b", re.I)
         self._reactions = [(insults, ["😾"], 0.6), *REACTIONS]
         self._jobs: dict[tuple[int, int], ReplyJob] = {}
         self._last_spoke: dict[int, float] = {}
@@ -249,6 +290,7 @@ class Brain:
         self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
         self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
         self._warmed: dict[tuple[int, int], tuple[int, float]] = {}  # (guild, person) -> (day, affection gained)
+        self._cooled: dict[tuple[int, int], tuple[int, float]] = {}  # (guild, person) -> (day, affection lost)
         self._last_reacted: dict[int, float] = {}
         self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
         self._prepared: dict[int, Prepared] = {}  # channel -> notes for its next reply, already read
@@ -339,6 +381,17 @@ class Brain:
             if decision.reply == "ambient" and decision.reaction and self.rng.random() < 0.5:
                 decision.reply = None  # the reaction says enough
         return decision
+
+    def mischief_idea(self, recent: list[str]) -> str:
+        """Something new to get up to, not like anything in `recent` (Whiskers' latest messages)."""
+        used = set(keywords(" ".join(recent), limit=200))
+        fresh = [idea for props, idea in MISCHIEF_IDEAS if not used & set(props.split())]
+        return self.rng.choice(fresh or [idea for _, idea in MISCHIEF_IDEAS]).format(**self.pronouns)
+
+    def mean_to_him(self, about: str, text: str) -> bool:
+        """Whether a dislike was someone being mean to Whiskers (so it costs them his trust), going by what he
+        disliked and what they wrote."""
+        return mistreated(about) or mistreated(text) or bool(self._name_calling.search(text or ""))
 
     def others_here(self, channel_id: int, author_id: int, now: float) -> list[str]:
         """Names of the other people who wrote in a channel recently."""
@@ -571,9 +624,16 @@ class Brain:
         line = f"{profile.name}: {relationship(profile.chats, profile.user_id == owner_id, profile.affection, profile.chosen)}."
         if profile.facts:
             line += " " + "; ".join(profile.facts[-3:]) + "."
-        felt = [f for f in profile.feelings if f.feeling != "neutral"][-3:]
-        if felt:
-            line += " You " + "; ".join(f"{f.feeling} {f.about} ({ago(now - f.at)})" for f in reversed(felt)) + "."
+        # What he likes and dislikes with them overall, so one moment doesn't outweigh everything before it.
+        liked, disliked = likes_and_dislikes(profile.feelings)
+        if liked:
+            line += f" You love {', '.join(liked[:3])} with them."
+        if disliked:
+            line += f" You don't like {', '.join(disliked[:2])}."
+        hurt = [f for f in profile.feelings if f.feeling in ("disliked", "hated") and mistreated(f.about)
+                and now - f.at < RECENT_HURT]
+        if hurt:
+            line += f" You're still sore about the {hurt[-1].about} ({ago(now - hurt[-1].at)})."
         return line
 
     @staticmethod
@@ -582,7 +642,7 @@ class Brain:
 
     def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
                       repeating: list[str] | None = None, news: list[str] | None = None,
-                      now: float | None = None, quiet: bool = False, mischievous: bool = False) -> list[str]:
+                      now: float | None = None, quiet: bool = False, mischief: str = "") -> list[str]:
         """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
         None of it depends on the next message, so it can be read ahead of time."""
         now = time.time() if now is None else now
@@ -598,12 +658,13 @@ class Brain:
         if quiet:
             notes.append("You haven't made a sound in a while. A mrrp, meow, purr or hiss would fit if the moment "
                          "calls for one.")
-        if mischievous:
-            notes.append("You're in a mischievous mood: react to what just happened first, then add some trouble of "
-                         "your own, unless someone is sad or it's a serious moment.")
+        if mischief:
+            notes.append(f"You're in a mischievous mood: react to what just happened first, then add some trouble of "
+                         f"your own ({mischief}, perhaps), unless someone is sad or it's a serious moment.")
         return notes
 
-    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False, others: list[str] | None = None) -> str:
+    def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False, others: list[str] | None = None,
+                   idea: str = "") -> str:
         """Which message to answer, and how. `others` names the other people around in a home channel, who
         each get their own reply."""
         latest = msg.content if len(msg.content) <= 160 else msg.content[:160] + "..."
@@ -632,9 +693,8 @@ class Brain:
             how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
             return (f'It has gone quiet: nobody has said anything for a few minutes (the last was {msg.author_name}: '
                     f'"{latest}"). You\'re bored, so start some mischief of your own, {how}, and make the people '
-                    f"here part of it: steal something of theirs and run, ambush someone's feet, knock something off "
-                    f"a table while staring at its owner, drop a toy on someone to start a game, or something else "
-                    f"{self.name} would do. Fit it to what's been happening. Your \"feeling\" is neutral.")
+                    f"here part of it. This time: {idea or self.mischief_idea([])}, or something just as new, not "
+                    f"anything you've done lately. Fit it to what's been happening. Your \"feeling\" is neutral.")
         return (f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                 f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
 
@@ -707,7 +767,8 @@ class Brain:
             words = keywords(" ".join([msg.content] + [r.content for r in rows[-4:] if not r.is_self]))
             notes, _, _ = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id, msg.owner_id, words)
             after = []
-        after.append(self.reply_note(msg, kind, journal.can_speak, others))
+        idea = self.mischief_idea([r.content for r in rows if r.is_self][-10:]) if kind == "mischief" else ""
+        after.append(self.reply_note(msg, kind, journal.can_speak, others, idea))
         slot = await self._ready_slot(msg.channel_id, system)
 
         def finish(raw: str) -> str:
@@ -844,9 +905,9 @@ class Brain:
         news = [n for p in profiles if (n := self._news.pop((guild_id, p.user_id), None))]
         # Now and then Whiskers starts something himself instead of only answering (/whiskers mischief).
         level = MISCHIEF.get((await self.db.guild_settings(guild_id)).mischief) if guild_id else None
-        mischievous = bool(level) and self.rng.random() < level.nudge
+        mischief = self.mischief_idea(own) if level and self.rng.random() < level.nudge else ""
         notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet,
-                                   mischievous=mischievous)
+                                   mischief=mischief)
         return notes, {p.user_id for p in profiles}, {m.id for m in memories}
 
     def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:
@@ -891,23 +952,40 @@ class Brain:
         Returns "chosen" or "dropped" when that happens.
         """
         effect = FEELING_EFFECT.get(feeling, 0)
+        if effect < 0 and not self.mean_to_him(about, msg.content):
+            effect = 0  # something he didn't enjoy (a bath, being put down, a game ending), not someone being mean
         profile = await self.db.profile(msg.guild_id, msg.author_id) if msg.guild_id else None
         self._felt[msg.channel_id] = (feeling or "neutral", about, profile.affection if profile else 0.0, None)
-        if not effect or profile is None:
+        if profile is None or not (effect or (about and FEELING_WEIGHT.get(feeling))):
             return None
-        if effect > 0:  # kindness builds trust slowly, a little each day; hurt counts straight away
-            day = int(time.time() // 86400)
-            warmed_day, warmed = self._warmed.get((msg.guild_id, msg.author_id), (day, 0.0))
+        # Trust changes a little each day either way: kindness builds it over days, and one bad day takes
+        # away at most DAILY_COOLING, so a friendship survives a rough afternoon but not repeated cruelty.
+        day, key = int(time.time() // 86400), (msg.guild_id, msg.author_id)
+        if effect > 0:
+            warmed_day, warmed = self._warmed.get(key, (day, 0.0))
             warmed = warmed if warmed_day == day else 0.0
             effect = max(0.0, min(effect, DAILY_WARMING - warmed))
-            self._warmed[(msg.guild_id, msg.author_id)] = (day, warmed + effect)
+            self._warmed[key] = (day, warmed + effect)
+        elif effect < 0:
+            cooled_day, cooled = self._cooled.get(key, (day, 0.0))
+            cooled = cooled if cooled_day == day else 0.0
+            effect = min(0.0, max(effect, -(DAILY_COOLING - cooled)))
+            self._cooled[key] = (day, cooled - effect)
         affection = max(-100.0, min(100.0, profile.affection + effect))
         feelings = list(profile.feelings)
-        if about:
-            feelings = [f for f in feelings if not similar(f.about, about)]
-            feelings.append(Feeling(about, feeling, time.time()))
+        if about and FEELING_WEIGHT.get(feeling):
+            # Feelings about the same thing add up: an afternoon of loving the laser outweighs it going off once.
+            weight = FEELING_WEIGHT[feeling]
+            match = next((f for f in reversed(feelings) if same_thing(f.about, about)), None)
+            if match:
+                feelings.remove(match)
+                score = max(-6, min(6, match.score + weight))
+                if (match.score > 0) == (score > 0):
+                    about = match.about  # keep how he thinks of it, unless how he feels about it has turned
+                feelings.append(Feeling(about, feeling, time.time(), score))
+            else:
+                feelings.append(Feeling(about, feeling, time.time()))
         chosen, change = profile.chosen, None
-        key = (msg.guild_id, msg.author_id)
         if (not chosen and msg.author_id != msg.owner_id and affection >= CHOOSE_AT
                 and profile.chats >= CHOOSE_MIN_CHATS and len(await self.db.chosen_people(msg.guild_id)) < MAX_CHOSEN):
             chosen, change = True, "chosen"

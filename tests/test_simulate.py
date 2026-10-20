@@ -58,9 +58,10 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         assert "Whiskers (chimes in): *pounces" in transcript
         assert "--- The next day ---" in transcript
         assert "(before this scene: Angel +52 (loved belly rubs, loved salmon))" in transcript
-        assert "(feels loved about Angel: chin scratches · affection +58)" in transcript
+        assert "(feels loved about Angel: chin scratches · affection +57)" in transcript
         assert "★ Whiskers chose Angel as one of his people" in transcript
-        assert "Brandon +6 (human)" in transcript
+        assert "feelings: " in transcript and " held against someone" in transcript
+        assert "Brandon +15 (human)" in transcript
         assert await db.recent_messages(1000, 10) == []  # the real database is untouched
         assert not (cfg.data_dir / "simulation.db").exists()
         saved = (cfg.data_dir / "simulation-transcript.txt").read_text()  # kept on disk in case of a restart
@@ -213,17 +214,19 @@ def test_marathon_scenes_are_long():
 
 
 def test_measures_sum_up_a_run():
-    played = [Played("*pounces* MRRP!", 20.0, 1, 0), Played("*tilts head*", 10.0, 2, 1),
-              Played("*starts purring*", 12.0, 11, 0), Played("*looks at Milo*", 14.0, 12, 2)]
+    played = [Played("*pounces* MRRP!", 20.0, 1, 0, "loved"), Played("*tilts head*", 10.0, 2, 1),
+              Played("*starts purring*", 12.0, 11, 0, "disliked"), Played("*looks at Milo*", 14.0, 12, 2, "hated", True)]
     lines = measures(played)
     assert lines[0] == "4 replies, 14s average (a scene's first reply 20s, the rest 12s)"
     assert lines[1] == "sounds: 50% of replies make a cat sound, 25% say one out loud"
     assert lines[2] == "length: 14 characters on average"
     assert lines[3] == "passive starts (tilts, looks, stares...): 50%"
-    assert lines[4] == "how Whiskers holds up as a scene goes on:"
-    assert lines[5] == "  replies 1-10 (2): sounds 50% (50% out loud) · 14 characters · passive 50% · 1 warning · 15s"
-    assert lines[6].startswith("  replies 11-20 (2): sounds 50% (0% out loud)")
-    assert len(lines) == 7  # no row for positions nobody reached
+    assert lines[4] == ("feelings: 1 loved, 0 liked, 1 neutral, 1 disliked, 1 hated; 1 held against someone "
+                        "(only real mistreatment should be)")
+    assert lines[5] == "how Whiskers holds up as a scene goes on:"
+    assert lines[6] == "  replies 1-10 (2): sounds 50% (50% out loud) · 14 characters · passive 50% · 1 warning · 15s"
+    assert lines[7].startswith("  replies 11-20 (2): sounds 50% (0% out loud)")
+    assert len(lines) == 8  # no row for positions nobody reached
     assert "holds up" not in "\n".join(measures(played[:2]))  # short scenes only
     assert says_sound("*pads over* mrrp?") and not says_sound("*purrs*")
 
