@@ -417,7 +417,7 @@ def test_the_scene_carries_over_and_repetition_is_pointed_out(cfg, tmp_path):
         assert "You've been repeating yourself (" in last_turn and "nuzzles" in last_turn
         assert "purrs" not in last_turn.split("repeating yourself")[1].split(")")[0]  # sounds may repeat
         assert "You haven't made a sound" not in last_turn
-        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply", "feeling", "about"]
+        assert brain.llm.calls[-1][1]["json_schema"]["required"] == ["scene", "reply", "feeling", "about", "now"]
         await brain.db.close()
 
     asyncio.run(go())
@@ -699,3 +699,24 @@ def test_mischief_ideas_change_and_skip_what_he_did_lately(cfg):
         idea = brain.mischief_idea(lately)
         assert "sock" not in idea and "box or bag" not in idea
     assert all("keyboard" not in idea for _, idea in MISCHIEF_IDEAS)
+
+
+def test_whiskers_knows_where_he_is_and_what_hes_busy_with_next_time(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, json.dumps({
+            "scene": "Kenobi pets him", "reply": "*hops onto the chair arm and kneads*", "feeling": "liked",
+            "about": "pets", "now": "on the arm of Kenobi's chair, kneading"}))
+        await brain.db.connect()
+        msg = incoming("*pets you*", author=5, mentions_me=True, owner_id=8)
+        await brain.observe(msg, GuildSettings(), 0)
+        await brain.compose(msg, "direct")
+        assert brain.last_now(10) == "on the arm of Kenobi's chair, kneading"
+        await brain.compose(incoming("*starts typing*", author=5, mentions_me=True, owner_id=8), "direct")
+        notes = brain.llm.calls[-1][0][-1]["content"]
+        assert "- Where you are and what you're doing: on the arm of Kenobi's chair, kneading." in notes
+        await brain.db.close()
+
+    asyncio.run(go())

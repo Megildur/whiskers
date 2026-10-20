@@ -297,6 +297,7 @@ class Brain:
         self._owners: dict[int, int] = {}  # guild -> Whiskers' human
         self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
         self._unsaved_scene: dict[int, str] = {}  # channel -> the scene note of the reply about to be recorded
+        self._now: dict[int, tuple[str, float]] = {}  # channel -> where Whiskers is and what he's busy with
         self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
         self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
         self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
@@ -676,7 +677,7 @@ class Brain:
 
     def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
                       repeating: list[str] | None = None, news: list[str] | None = None,
-                      now: float | None = None, quiet: bool = False, mischief: str = "") -> list[str]:
+                      now: float | None = None, quiet: bool = False, mischief: str = "", doing: str = "") -> list[str]:
         """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
         None of it depends on the next message, so it can be read ahead of time."""
         now = time.time() if now is None else now
@@ -687,6 +688,8 @@ class Brain:
         notes += news or []
         if scene:
             notes.append(f"Where things stood after your last message: {scene}")
+        if doing:  # so he moves on from where he really is: off the chair arm before chasing a toy on the floor
+            notes.append(f"Where you are and what you're doing: {doing}.")
         if repeating:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
         if quiet:
@@ -742,6 +745,10 @@ class Brain:
     def last_raw_reply(self, channel_id: int) -> str:
         """What the model wrote for its last reply here, before human words were filtered out."""
         return self._raw.get(channel_id, "")
+
+    def last_now(self, channel_id: int) -> str:
+        """Where Whiskers is and what he's busy with after his last message in a channel, for simulations."""
+        return self._now.get(channel_id, ("", 0.0))[0]
 
     def last_scene(self, channel_id: int) -> str:
         """Whiskers' latest private note on what's happening in a channel."""
@@ -875,6 +882,8 @@ class Brain:
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
         self._unsaved_scene[msg.channel_id] = scene[:200]
+        if parts.now:
+            self._now[msg.channel_id] = (parts.now, time.time())
         self._raw[msg.channel_id] = reply
         if text is None:
             text = finish(reply)
@@ -933,6 +942,9 @@ class Brain:
         scene, scene_at = self._scenes.get(channel_id, ("", 0.0))
         if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
             scene = ""
+        doing, doing_at = self._now.get(channel_id, ("", 0.0))
+        if time.time() - doing_at > SILENCE_RESETS_CONTEXT:
+            doing = ""
         names = {r.author_name for r in rows if not r.is_self}
         # Only Whiskers' own habits count as repeating, not the people and things the scene is about.
         props = keywords(" ".join(r.content for r in rows[-12:] if not r.is_self), limit=40)
@@ -946,7 +958,7 @@ class Brain:
         level = MISCHIEF.get((await self.db.guild_settings(guild_id)).mischief) if guild_id else None
         mischief = self.mischief_idea(own) if level and self.rng.random() < level.nudge else ""
         notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet,
-                                   mischief=mischief)
+                                   mischief=mischief, doing=doing)
         return notes, {p.user_id for p in profiles}, {m.id for m in memories}
 
     def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:

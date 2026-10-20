@@ -310,6 +310,7 @@ class ReplyParts(NamedTuple):
     reply: str
     feeling: str
     about: str
+    now: str = ""  # where Whiskers is and what he's busy with after the message
 
 
 def _tidy_feeling(feeling: str, about: str) -> tuple[str, str]:
@@ -319,7 +320,15 @@ def _tidy_feeling(feeling: str, about: str) -> tuple[str, str]:
 def read_reply(text: str) -> ReplyParts:
     """The parts of a JSON reply, even one cut off partway. Plain text is all message."""
     scene, reply = parse_reply(text)
-    return ReplyParts(scene, reply, *parse_feeling(text))
+    stripped = text.strip()
+    now = ""
+    if stripped.startswith("{"):
+        try:
+            data = json.loads(stripped)
+            now = str(data.get("now") or "") if isinstance(data, dict) else ""
+        except ValueError:
+            now = _json_string_field(stripped, "now") or ""
+    return ReplyParts(scene, reply, *parse_feeling(text), " ".join(now.split()).strip(" .")[:80])
 
 
 def written_reply(text: str) -> str | None:

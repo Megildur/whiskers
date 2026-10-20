@@ -168,7 +168,7 @@ def test_a_scene_note_cut_off_at_its_limit_ends_cleanly(cfg, tmp_path):
 def test_scene_note_after_the_message_posts_even_sooner(cfg, tmp_path):
     from whiskers.prompts import reply_schema
 
-    assert list(reply_schema(False)["properties"]) == ["reply", "scene", "feeling", "about"]
+    assert list(reply_schema(False)["properties"]) == ["reply", "scene", "feeling", "about", "now"]
 
     class ReplyFirst(Model):
         async def answer(self, messages, kwargs):

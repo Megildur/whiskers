@@ -170,8 +170,12 @@ def test_replies_are_read_from_json_even_while_being_written():
     from whiskers.text import narration_as_action, read_reply, written_reply
 
     assert read_reply('{"scene": "x", "reply": "*naps*", "feeling": "Loved", "about": "tuna."}') == (
-        "x", "*naps*", "loved", "tuna")
-    assert read_reply("just some text") == ("", "just some text", "", "")
+        "x", "*naps*", "loved", "tuna", "")
+    assert read_reply('{"scene": "x", "reply": "*hops onto the chair arm*", "feeling": "neutral", "about": "", '
+                      '"now": "on the arm of Kenobi\'s chair."}').now == "on the arm of Kenobi's chair"
+    assert read_reply('{"scene": "x", "reply": "*naps*", "feeling": "liked", "about": "", "now": "curled up on the'
+                      ).now == "curled up on the"  # cut off: as much as there is
+    assert read_reply("just some text") == ("", "just some text", "", "", "")
     assert written_reply('{"scene": "x", "reply": "*na') is None
     assert written_reply('{"scene": "x", "reply": "*naps*"') == "*naps*"
     assert narration_as_action("Whiskers leans into the hand and purrs.", "Whiskers") == "*leans into the hand and purrs*"

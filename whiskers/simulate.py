@@ -163,6 +163,18 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("new", "*hides the feather behind the couch*"),
             ("new", "*lets you catch it*"),
         ],
+        # As in real chat with General Kenobi: petted on a chair's armrest, then a quiet spell with a catnip mouse on
+        # the floor (he gets down before going for it), then Milo goes back to typing (he keeps playing on the
+        # floor, not suddenly up at the keyboard).
+        "armrest": [
+            ("owner", "*drops a catnip mouse on the floor on the way out*", "chime"),
+            ("regular", "*sits in my desk chair and pats the armrest*"),
+            ("regular", "*scratches your back*", "reply"),
+            ("regular", "*keeps petting you and makes a purring sound*", "reply"),
+            ("quiet", "Nobody says anything for a few minutes"),
+            ("regular", "*glances over and goes back to typing on my keyboard*", "reply"),
+            ("regular", "*keeps typing*", "reply"),
+        ],
         # A toy he loves keeps him busy while the others talk and the room goes quiet, until someone plays again.
         "new-toy": [
             ("friend", "*tosses you a new catnip mouse with a little bell in it*"),
@@ -769,6 +781,8 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                     lines.append(f"    (model wrote: {raw[:400]})")
                 label = {"home": " (chimes in)", "mischief": " (starts something)"}.get(kind, "")
                 lines.append(f"{cat}{label}: {reply}    [{seconds:.0f}s]")
+                if brain.last_now(channel_id):
+                    lines.append(f"    (now: {brain.last_now(channel_id)})")
                 felt = brain.last_feeling(channel_id)
                 if felt and felt[0] != "neutral":
                     feeling, about, affection, change = felt

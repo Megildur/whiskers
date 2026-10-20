@@ -89,7 +89,7 @@ def test_system_prompt_names_whiskers_human():
 def test_replies_say_how_the_person_made_whiskers_feel():
     from whiskers.prompts import REPLY_SCHEMA, reflection_messages, reply_system_prompt
 
-    assert list(REPLY_SCHEMA["properties"]) == ["scene", "reply", "feeling", "about"]  # the reply is posted early
+    assert list(REPLY_SCHEMA["properties"]) == ["scene", "reply", "feeling", "about", "now"]  # the reply is posted early
     assert "hated" in REPLY_SCHEMA["properties"]["feeling"]["enum"]
     assert '"feeling": how what the person you\'re answering' in reply_system_prompt("P", "- j", "Whiskers", False)
     messages = reflection_messages("Whiskers", "P", "- j", [], "chat", can_speak=False, may_learn=False,
