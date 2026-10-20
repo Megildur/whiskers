@@ -133,6 +133,8 @@ MISCHIEF_IDEAS: list[tuple[str, str]] = [
 MISCHIEF_QUIET = 5 * 60  # Whiskers starts something when nobody has said anything for this long...
 MISCHIEF_AROUND = 45 * 60  # ...but someone was talking within this, so there's somebody to bother
 MISCHIEF_IGNORED = 20 * 60  # nobody said anything this long after one: the next waits twice the usual gap
+FOLLOW_UP_WINDOW = 90  # seconds after Whiskers answered someone who called him...
+FOLLOW_UP_CHANCE = 0.5  # ...that their next message, if it isn't for someone else, gets an answer too
 ROOM_WINDOW = 5 * 60  # someone who wrote in a channel within this is still around
 # Roleplay that sets a scene even without naming Whiskers: an action in *asterisks* or _underscores_, or
 # someone narrating what they do ("I put him in the tub").
@@ -200,6 +202,12 @@ def is_allowed(settings: GuildSettings, rules: dict[int, ChannelRule], chain: li
     if rule:
         return rule == "allow"
     return settings.mode == "everywhere"
+
+
+def chime_in_gap(chattiness: int) -> float:
+    """Seconds after Whiskers last spoke in a roaming channel before he joins in there again uninvited: almost ten
+    minutes at low chattiness, a minute at 100%, so he never takes over a busy chat."""
+    return 60 + 540 * (1 - max(0, min(100, chattiness)) / 100)
 
 
 def chattiness_for(settings: GuildSettings, rules: dict[int, ChannelRule], chain: list[int]) -> int:
@@ -282,7 +290,8 @@ class Brain:
         self._reactions = [(insults, ["😾"], 0.6), *REACTIONS]
         self._jobs: dict[tuple[int, int], ReplyJob] = {}
         self._last_spoke: dict[int, float] = {}
-        self._last_spoke_to: dict[tuple[int, int], float] = {}
+        # (channel, person) -> when Whiskers answered them calling him: their next message may get a follow-up
+        self._follow_up: dict[tuple[int, int], float] = {}
         self._last_message: dict[int, int] = {}
         self._owners: dict[int, int] = {}  # guild -> Whiskers' human
         self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
@@ -365,10 +374,13 @@ class Brain:
             decision.reply = "direct"
         else:
             chance = chattiness / 100
-            if now - self._last_spoke_to.get((msg.channel_id, msg.author_id), 0) < 120:
-                chance = max(chance, 0.6)  # Whiskers just answered them, so they're probably still talking to it
-            elif now - self._last_spoke.get(msg.channel_id, 0) < 30:
-                chance = 0.0  # don't take over the channel
+            # They called Whiskers a moment ago and kept talking: one chance at a follow-up, never a chain of
+            # them. Otherwise he keeps out of the chat for a while after speaking in it.
+            called_at = self._follow_up.pop((msg.channel_id, msg.author_id), None)
+            if called_at is not None and now - called_at < FOLLOW_UP_WINDOW and not msg.replies_to_other:
+                chance = max(chance, FOLLOW_UP_CHANCE)
+            elif now - self._last_spoke.get(msg.channel_id, 0) < chime_in_gap(chattiness):
+                chance = 0.0
             elif CAT_WORDS.search(msg.content):
                 chance *= 2.5
             chance *= fondness
@@ -538,7 +550,7 @@ class Brain:
                 message_id = posted[0] if posted else None
                 if message_id is not None:
                     await self.record_own_message(job.message, message_id, text, time.time(),
-                                                  unprompted=job.kind == "mischief")
+                                                  unprompted=job.kind == "mischief", called=job.kind == "direct")
                     channel = job.message.channel_id
                     read = max(self._read_upto.get(channel, 0), job.message.message_id)
                     person = (channel, job.message.author_id)
@@ -566,12 +578,14 @@ class Brain:
         return self._last_own.get(msg.channel_id, 0) > msg.message_id
 
     async def record_own_message(self, msg: Incoming, message_id: int, text: str, created_at: float,
-                                 unprompted: bool = False) -> None:
+                                 unprompted: bool = False, called: bool = False) -> None:
+        """`called`: the reply answered someone who called Whiskers (mentioned, replied to or named him)."""
         await self.db.add_message(msg.guild_id, msg.channel_id, message_id, self.user_id, self.name, text,
                                   created_at, is_self=True, unprompted=unprompted)
         now = time.time()
         self._last_spoke[msg.channel_id] = now
-        self._last_spoke_to[(msg.channel_id, msg.author_id)] = now
+        if called:
+            self._follow_up[(msg.channel_id, msg.author_id)] = now
         self._last_message[msg.channel_id] = message_id
         self._last_own[msg.channel_id] = message_id
         self._last_author[msg.channel_id] = self.user_id

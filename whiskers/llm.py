@@ -368,10 +368,11 @@ class LLMClient:
             raise LLMError(f"couldn't reach the AI engine: {error}") from error
 
         seconds = time.monotonic() - started
-        if timings.get("predicted_per_second"):
-            self.tokens_per_second = float(timings["predicted_per_second"])
-        elif tokens and seconds:
-            self.tokens_per_second = tokens / seconds
+        if tokens > 8:  # reading ahead writes a single token, which says nothing about the writing speed
+            if timings.get("predicted_per_second"):
+                self.tokens_per_second = float(timings["predicted_per_second"])
+            elif seconds:
+                self.tokens_per_second = tokens / seconds
         if timings.get("prompt_per_second") and timings.get("prompt_n", 0) > 16:
             self.prompt_tokens_per_second = float(timings["prompt_per_second"])
         text = THINK_BLOCK.sub("", "".join(parts))

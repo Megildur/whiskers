@@ -70,17 +70,28 @@ def test_random_chime_in_uses_chattiness(cfg):
     assert brain.decide(incoming("I bought tuna"), GuildSettings(), 25).reply == "ambient"  # cat words x2.5
 
 
-def test_follow_up_after_cat_answered_is_likely_for_the_cat(cfg):
-    brain = make_brain(cfg)
-    brain._last_spoke_to[(10, 1)] = 1000.0
-    assert brain.decide(incoming("good kitty"), GuildSettings(), 0, now=1060.0).reply == "ambient"
-    assert brain.decide(incoming("good kitty", author=2), GuildSettings(), 0, now=1060.0).reply is None
+def test_someone_who_called_the_cat_gets_one_follow_up_not_a_chain(cfg):
+    brain = make_brain(cfg, rng=EagerRandom())
+    brain._last_spoke[10] = brain._follow_up[(10, 1)] = 1000.0  # Whiskers answered user1 calling him
+    assert brain.decide(incoming("good kitty", author=2), GuildSettings(reactions=False), 5, now=1030.0).reply is None
+    assert brain.decide(incoming("good kitty"), GuildSettings(reactions=False), 5, now=1060.0).reply == "ambient"
+    brain._last_spoke[10] = 1080.0  # he answered that too
+    assert brain.decide(incoming("lol"), GuildSettings(reactions=False), 5, now=1100.0).reply is None  # no chain
+    brain._follow_up[(10, 1)] = 1100.0
+    assert brain.decide(incoming("lol", replies_to_other=True), GuildSettings(reactions=False), 5,
+                        now=1120.0).reply is None  # talking to someone else now
 
 
-def test_cat_does_not_chime_in_right_after_speaking(cfg):
-    brain = make_brain(cfg)
+def test_cat_does_not_take_over_a_roaming_channel(cfg):
+    from whiskers.brain import chime_in_gap
+
+    brain = make_brain(cfg, rng=EagerRandom())
     brain._last_spoke[10] = 1000.0
-    assert brain.decide(incoming("nice weather", author=2), GuildSettings(), 90, now=1010.0).reply is None
+    quiet = GuildSettings(reactions=False)
+    assert brain.decide(incoming("nice weather", author=2), quiet, 90, now=1010.0).reply is None
+    assert brain.decide(incoming("nice weather", author=2), quiet, 5, now=1000.0 + 8 * 60).reply is None
+    assert brain.decide(incoming("nice weather", author=2), quiet, 5, now=1000.0 + 10 * 60).reply == "ambient"
+    assert chime_in_gap(5) > 9 * 60 and chime_in_gap(100) == 60
 
 
 class EagerRandom(random.Random):
