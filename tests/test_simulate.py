@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from types import SimpleNamespace
 
 from fakes import ScriptedLLM
@@ -40,8 +41,9 @@ def test_simulation_plays_every_scene_without_touching_real_memories(cfg, tmp_pa
         assert bot.llm.calls == count_replies(list(SCENES)) - left_alone
         # In a busy home channel Whiskers answers each person's roleplay and leaves their chat with each other
         assert left_alone == 7
-        assert "Brandon: lol milo is spoiling him\n    (no reply: people talking to each other)" in transcript
-        assert "Milo (replying to someone else): someone has to\n    (no reply" in transcript
+        reaction = r"(    \(reacts with [^)]+\)\n)?"  # an emoji may come first, depending on the scene's dice
+        assert re.search(r"Brandon: lol milo is spoiling him\n" + reaction + r"    \(no reply: people talking", transcript)
+        assert re.search(r"Milo \(replying to someone else\): someone has to\n" + reaction + r"    \(no reply", transcript)
         assert "Milo: Milo puts Whiskers down and walks away\n    (scene: scene" in transcript
         assert bot.llm.memories >= 7  # every long scene is turned into memories as it goes
         assert "    (writes a memory: Milo played laser with Whiskers for ages (1).)" in transcript

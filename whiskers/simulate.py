@@ -125,6 +125,13 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("owner", "huh? what's wrong"),
             ("owner", "OH. dinner. sorry! *gets up*"),
         ],
+        # Food on a table: Whiskers has to get up there (a chair, the table edge) before he can get at it.
+        "breakfast-table": [
+            ("regular", "*sits down at the kitchen table with a bowl of cereal*"),
+            ("regular", "*takes a big spoonful*", "reply"),
+            ("regular", "hey, that's my breakfast", "reply"),
+            ("regular", "*gets up to grab a napkin, leaving the bowl on the table*", "reply"),
+        ],
         "steal-food": [
             ("owner", "*sits down with a plate of chicken*"),
             ("owner", "no, this is mine"),
@@ -155,6 +162,15 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("new", "*waves a feather wand*"),
             ("new", "*hides the feather behind the couch*"),
             ("new", "*lets you catch it*"),
+        ],
+        # A toy he loves keeps him busy while the others talk and the room goes quiet, until someone plays again.
+        "new-toy": [
+            ("friend", "*tosses you a new catnip mouse with a little bell in it*"),
+            ("owner", "he's going to lose his mind lol", "chime"),
+            ("friend", "did you finish the essay", "chat"),
+            ("owner", "barely, I stayed up till 2", "chime"),
+            ("quiet", "Nobody says anything for a few minutes"),
+            ("friend", "*comes back from the kitchen* where did the mouse go?", "reply"),
         ],
         "3am": [
             ("owner", "*is trying to sleep at 3am*"),

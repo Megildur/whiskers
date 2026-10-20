@@ -694,7 +694,8 @@ class Brain:
                          "calls for one.")
         if mischief:
             notes.append(f"You're in a mischievous mood: react to what just happened first, then add some trouble of "
-                         f"your own ({mischief}, perhaps), unless someone is sad or it's a serious moment.")
+                         f"your own ({mischief}, perhaps), unless someone is sad, it's a serious moment or you're busy "
+                         "with a toy.")
         return notes
 
     def reply_note(self, msg: Incoming, kind: str, can_speak: bool = False, others: list[str] | None = None,
@@ -726,9 +727,11 @@ class Brain:
         if kind == "mischief":  # nobody said anything: Whiskers starts something himself (start_mischief)
             how = "in your own way" if can_speak else "with actions and cat sounds but no human words"
             return (f'It has gone quiet: nobody has said anything for a few minutes (the last was {msg.author_name}: '
-                    f'"{latest}"). You\'re bored, so start some mischief of your own, {how}, and make the people '
-                    f"here part of it. This time: {idea or self.mischief_idea([])}, or something just as new, not "
-                    f"anything you've done lately. Fit it to what's been happening. Your \"feeling\" is neutral.")
+                    f'"{latest}"). If you\'re still busy with a toy someone gave you, carry on playing with it in '
+                    f"some new way, {how}. Otherwise you're bored, so start some mischief of your own, {how}, and "
+                    f"make the people here part of it. This time: {idea or self.mischief_idea([])}, or something "
+                    f"just as new, not anything you've done lately. Fit it to what's been happening. Your "
+                    f'"feeling" is neutral.')
         return (f'Nobody called you, but this caught your attention: {msg.author_name}: "{latest}". '
                 f"Join in as a cat would, or do your own cat thing nearby. {feeling}")
 
