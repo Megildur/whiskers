@@ -69,6 +69,7 @@ ANTI_REPEAT = {"dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2,
 HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usually runs out first
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
+EARLIER_NOTES = 10  # scene notes from before the chat the model sees, so what happened earlier isn't forgotten
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
 
 # How each reply's "feeling" moves Whiskers' affection for that person (-100 to 100). Hurting Whiskers
@@ -295,6 +296,7 @@ class Brain:
         self._last_message: dict[int, int] = {}
         self._owners: dict[int, int] = {}  # guild -> Whiskers' human
         self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
+        self._unsaved_scene: dict[int, str] = {}  # channel -> the scene note of the reply about to be recorded
         self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
         self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
         self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
@@ -579,9 +581,11 @@ class Brain:
 
     async def record_own_message(self, msg: Incoming, message_id: int, text: str, created_at: float,
                                  unprompted: bool = False, called: bool = False) -> None:
-        """`called`: the reply answered someone who called Whiskers (mentioned, replied to or named him)."""
+        """`called`: the reply answered someone who called Whiskers (mentioned, replied to or named him). The
+        reply's scene note is kept with it, to remind Whiskers of it once the message itself is out of view."""
         await self.db.add_message(msg.guild_id, msg.channel_id, message_id, self.user_id, self.name, text,
-                                  created_at, is_self=True, unprompted=unprompted)
+                                  created_at, is_self=True, unprompted=unprompted,
+                                  scene=self._unsaved_scene.pop(msg.channel_id, ""))
         now = time.time()
         self._last_spoke[msg.channel_id] = now
         if called:
@@ -622,6 +626,22 @@ class Brain:
                 rows = rows[1:]
             self._window_start[channel_id] = rows[0].id
         return [replace(row, content=row.content[:MESSAGE_CHAR_LIMIT]) for row in rows]
+
+    async def earlier(self, channel_id: int, rows: list[StoredMessage]) -> list[str]:
+        """Whiskers' scene notes from just before `rows` (the chat the model sees), oldest first: the window only
+        shows the last few dozen messages, so without them the goat milk left out twenty messages ago is
+        forgotten by the time he's hungry. Like the window, they stop at a long silence."""
+        if not rows:
+            return []
+        kept: list[str] = []
+        newer = rows[0].created_at
+        for at, scene in reversed(await self.db.scenes_before(channel_id, rows[0].id, EARLIER_NOTES)):
+            if newer - at > SILENCE_RESETS_CONTEXT:
+                break
+            if not kept or scene != kept[0]:
+                kept.insert(0, scene)
+            newer = at
+        return kept
 
     def _part_of_day(self, now: float) -> tuple[str, datetime]:
         local = datetime.fromtimestamp(now, self._tz)
@@ -762,6 +782,7 @@ class Brain:
                 since.insert(0, row.author_name)
         others = self.others_here(msg.channel_id, msg.author_id, msg.created_at) if kind == "home" else []
         self._read_upto[msg.channel_id] = max([r.message_id for r in rows if not r.is_self] + [msg.message_id])
+        earlier = await self.earlier(msg.channel_id, rows)
         system = await self.system_prompt(msg.guild_id, journal)
         names = sorted({r.author_name for r in rows if not r.is_self} | {msg.author_name})
         now = time.time()
@@ -806,8 +827,8 @@ class Brain:
         async def generate() -> ChatResult:
             history = rows
             while True:
-                messages = reply_messages(system, history, notes, self.name,
-                                          system_in_first_turn=self._system_in_first_turn, after=after)
+                messages = reply_messages(system, history, notes, self.name, after=after, earlier=earlier,
+                                          system_in_first_turn=self._system_in_first_turn)
                 try:
                     return await self.llm.chat(
                         messages, max_tokens=self.cfg.max_reply_tokens, temperature=self.cfg.temperature,
@@ -850,6 +871,7 @@ class Brain:
             scene = re.split(r"[;,.](?=[^;,.]*$)", scene)[0].rstrip(" ;,.") or scene  # cut off mid-word: end it cleanly
         if scene:
             self._scenes[msg.channel_id] = (scene[:200], time.time())
+        self._unsaved_scene[msg.channel_id] = scene[:200]
         self._raw[msg.channel_id] = reply
         if text is None:
             text = finish(reply)
@@ -951,7 +973,9 @@ class Brain:
         notes, people, memories = await self._context(msg.guild_id, msg.channel_id, rows, msg.author_id,
                                                       msg.owner_id, words)
         slot = await self._ready_slot(msg.channel_id, system)
-        result = await self.llm.chat(prefill_messages(system, rows, notes, self.name, self._system_in_first_turn),
+        earlier = await self.earlier(msg.channel_id, rows)
+        result = await self.llm.chat(prefill_messages(system, rows, notes, self.name, self._system_in_first_turn,
+                                                      earlier),
                                      max_tokens=1, temperature=0.0, slot=slot)
         self.llm.remember_prefix(slot, system)
         self._prepared[msg.channel_id] = Prepared(notes, people, memories, [r.id for r in rows], system,

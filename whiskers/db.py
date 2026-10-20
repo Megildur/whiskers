@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     created_at REAL NOT NULL,
     summarized INTEGER NOT NULL DEFAULT 0,
-    unprompted INTEGER NOT NULL DEFAULT 0
+    unprompted INTEGER NOT NULL DEFAULT 0,
+    scene TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS messages_channel ON messages (channel_id, id);
 CREATE INDEX IF NOT EXISTS messages_guild ON messages (guild_id, id);
@@ -139,6 +140,7 @@ ADDED_COLUMNS = {
     },
     "messages": {
         "unprompted": "INTEGER NOT NULL DEFAULT 0",  # Whiskers started something on his own (Brain.start_mischief)
+        "scene": "TEXT NOT NULL DEFAULT ''",  # Whiskers' private note on the scene when he wrote this message
     },
     "profiles": {
         "affection": "REAL NOT NULL DEFAULT 0",
@@ -394,14 +396,24 @@ class Database:
     # ---- messages ----
 
     async def add_message(self, guild_id: int, channel_id: int, message_id: int, author_id: int, author_name: str,
-                          content: str, created_at: float, is_self: bool = False, unprompted: bool = False) -> None:
+                          content: str, created_at: float, is_self: bool = False, unprompted: bool = False,
+                          scene: str = "") -> None:
         await self.conn.execute(
             "INSERT OR IGNORE INTO messages (guild_id, channel_id, message_id, author_id, author_name, is_self, content, "
-            "created_at, unprompted) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "created_at, unprompted, scene) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (guild_id, channel_id, message_id, author_id, author_name, int(is_self), content[:1000], created_at,
-             int(unprompted)),
+             int(unprompted), scene[:300]),
         )
         await self.conn.commit()
+
+    async def scenes_before(self, channel_id: int, row_id: int, limit: int) -> list[tuple[float, str]]:
+        """Whiskers' scene notes on his messages before row `row_id` in a channel, newest last: (when, note)."""
+        async with self.conn.execute(
+            "SELECT created_at, scene FROM messages WHERE channel_id = ? AND id < ? AND is_self = 1 AND scene != '' "
+            "ORDER BY id DESC LIMIT ?", (channel_id, row_id, limit),
+        ) as cur:
+            rows = await cur.fetchall()
+        return [(row["created_at"], row["scene"]) for row in reversed(rows)]
 
     async def last_unprompted(self, channel_id: int) -> tuple[float, float | None] | None:
         """When Whiskers last posted on his own in a channel, and when someone first spoke after that (None if

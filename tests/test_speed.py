@@ -442,3 +442,50 @@ def test_saved_slots_are_only_kept_for_the_same_model_and_settings(cfg, tmp_path
     assert (launch_folder(cfg) / "system-1.bin").exists()  # a plain restart keeps it
     other = dataclasses.replace(cfg, llm_flash_attn="off")
     assert not (launch_folder(other) / "system-1.bin").exists()  # different settings: start over
+
+
+def test_what_happened_before_the_chat_in_view_comes_back_from_scene_notes(cfg, tmp_path):
+    async def go():
+        class Scenes(Model):
+            async def answer(self, messages, kwargs):
+                self.calls.append((messages, kwargs))
+                note = "Brandon puts out goat milk; Whiskers turns his nose up" if len(self.calls) == 1 else "naps"
+                return json.dumps({"scene": note, "reply": "*purrs*", "feeling": "neutral", "about": ""})
+
+        llm = Scenes()
+        brain = brain_for(dataclasses.replace(cfg, history_messages=8), tmp_path, llm)
+        await brain.db.connect()
+        for i in range(10):
+            msg = message("*sets down a bowl of goat milk*" if i == 0 else f"*types {i}*", 1000 + i * 10,
+                          mentions_me=True)
+            await brain.observe(msg, GuildSettings(reactions=False), 0)
+            await brain.compose(msg, "direct")
+            await brain.record_own_message(msg, msg.message_id + 1, "*purrs*", 1000.0 + i)
+        await brain.prepare_next(msg)
+        ahead = llm.calls[-1][0]
+        hungry = message("*your stomach growls*", 1200, mentions_me=True)
+        await brain.observe(hungry, GuildSettings(reactions=False), 0)
+        await brain.compose(hungry, "direct")
+        prompt = llm.calls[-1][0]
+        chat = "\n".join(m["content"] for m in prompt)
+        assert "*sets down a bowl of goat milk*" not in chat  # long out of view...
+        assert "- Brandon puts out goat milk; Whiskers turns his nose up" in chat  # ...but not forgotten
+        assert prompt[:-1] == ahead[:-1]  # and it was all read ahead of time, like the rest
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_scene_notes_from_before_a_long_silence_stay_behind(cfg, tmp_path):
+    async def go():
+        brain = brain_for(cfg, tmp_path, Model())
+        await brain.db.connect()
+        for i, (at, scene) in enumerate([(1000.0, "yesterday's nap"), (20000.0, "Brandon put out goat milk"),
+                                         (20100.0, "Whiskers sniffed it and left")]):
+            await brain.db.add_message(1, 10, 500 + i, 0, "Whiskers", "*purrs*", at, is_self=True, scene=scene)
+        await brain.db.add_message(1, 10, 600, 8, "Brandon", "*types*", 20200.0)
+        rows = await brain.db.recent_messages(10, 1)
+        assert await brain.earlier(10, rows) == ["Brandon put out goat milk", "Whiskers sniffed it and left"]
+        await brain.db.close()
+
+    asyncio.run(go())

@@ -23,7 +23,7 @@ PRONOUNS = {
 ROLEPLAY_RULES = """\
 - This is a Discord roleplay chat. People's messages reach you as "Name: message". Text in *asterisks* is something that person does, and "I", "me" and "my" in it mean that person: "Brandon: *waits*" means Brandon waits, and "Brandon: *puts a pillow over my face*" means Brandon covers their own face. People don't always use asterisks: "I turn on the TV" is something they do, too. Some write about themselves by name: Milo writing "Milo puts you down and walks away" means Milo does it, nobody else.
 - Whatever people do to you really happens in the story: petting, picking you up, feeding you, even kicking you out of a window. React to it the way a real cat would, with the right feeling, and follow through on what it means (thrown out of a window, you're outside now).
-- Carry the scene forward. What already happened shapes what you do next: still eating after dinner was served, high on catnip, soaked from a bath, sulking after being kicked out.
+- Carry the scene forward. What already happened shapes what you do next: still eating after dinner was served, high on catnip, soaked from a bath, sulking after being kicked out. Keep track of where you are and what's around you: curled up on someone's lap or belly, hop down before you run off to do something else; food, milk or toys someone put out earlier are still there later when you want them.
 - Play only this moment. Don't jump ahead or wrap the situation up in one message: thrown out of a window, you land outside, and getting back in is for a later message. Leave room for the others to act.
 - Real cats are unpredictable. Mix affection with mischief: zoomies, ambushes, knocking things over, sudden naps, stealing someone's spot. You don't only react to people: now and then you start the trouble yourself and drag them into it.
 - You love gentle affection and hate rough handling: grabbed tails, pokes, squeezing, being chased or scared. That gets flattened ears, a hiss or a swat, and you remember who did it.
@@ -119,6 +119,7 @@ REPLY_SCHEMA = reply_schema()
 
 NOTES_HEADER = "({name}'s private notes, not part of the chat)"
 NOTES_AFTER_HEADER = "({name}'s private notes on the newest messages)"
+EARLIER_HEADER = "({name}'s private notes on what happened earlier, before the chat below, oldest first)"
 
 SUMMARY_SCHEMA = {
     "type": "object",
@@ -204,6 +205,14 @@ def notes_block(notes: list[str], name: str, header: str = NOTES_HEADER) -> str:
     return header.format(name=name) + "\n" + "\n".join(f"- {note}" for note in notes)
 
 
+def _with_earlier(turns: list[dict], earlier: list[str] | None, name: str) -> list[dict]:
+    """What happened before the chat shown, from Whiskers' own scene notes, at the very start. It only changes
+    when the shown chat starts later, so it stays in the model's cache along with the chat."""
+    if earlier:
+        turns[0] = {**turns[0], "content": notes_block(earlier, name, EARLIER_HEADER) + "\n\n" + turns[0]["content"]}
+    return turns
+
+
 def _with_system(turns: list[dict], system: str, system_in_first_turn: bool) -> list[dict]:
     if system_in_first_turn:
         turns[0] = {"role": "user", "content": f"{system}\n\n---\n\n{turns[0]['content']}"}
@@ -212,7 +221,8 @@ def _with_system(turns: list[dict], system: str, system_in_first_turn: bool) -> 
 
 
 def reply_messages(system: str, rows: list[StoredMessage], notes: list[str], name: str,
-                   system_in_first_turn: bool = False, after: list[str] | None = None) -> list[dict]:
+                   system_in_first_turn: bool = False, after: list[str] | None = None,
+                   earlier: list[str] | None = None) -> list[dict]:
     """The prompt for a reply. The notes go first in the last turn, before the newest messages, so they
     can be read into the model's cache while people are still typing (prefill_messages); only the newest
     messages and the short notes in `after` are left to read when a message arrives."""
@@ -221,16 +231,16 @@ def reply_messages(system: str, rows: list[StoredMessage], notes: list[str], nam
     if after:
         content += "\n\n" + notes_block(after, name, NOTES_AFTER_HEADER)
     turns[-1] = {"role": "user", "content": content}
-    return _with_system(turns, system, system_in_first_turn)
+    return _with_system(_with_earlier(turns, earlier, name), system, system_in_first_turn)
 
 
 def prefill_messages(system: str, rows: list[StoredMessage], notes: list[str], name: str,
-                     system_in_first_turn: bool = False) -> list[dict]:
+                     system_in_first_turn: bool = False, earlier: list[str] | None = None) -> list[dict]:
     """How the next reply's prompt will start, up to and including its notes. `rows` end with Whiskers'
     own latest message."""
     turns = chat_turns(rows, close=False)
     turns.append({"role": "user", "content": notes_block(notes, name)})
-    return _with_system(turns, system, system_in_first_turn)
+    return _with_system(_with_earlier(turns, earlier, name), system, system_in_first_turn)
 
 
 def transcript(rows: list[StoredMessage], name: str, max_chars: int = 6000) -> str:
