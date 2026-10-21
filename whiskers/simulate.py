@@ -42,7 +42,9 @@ from . import discord_scenes, marathon_scenes
 from .brain import FALLBACK_ACTIONS, Brain, Incoming
 from .db import Database, Feeling, GuildSettings
 from .llm import CHORES, LLMError
-from .text import ACTION_OR_PLAIN, is_cat_sound, keywords, makes_sound, readable, repeated_actions
+from .text import (
+    PASSIVE_START, is_cat_sound, keywords, makes_sound, out_of_place, readable, repeated_actions, says_sound,
+)
 
 if TYPE_CHECKING:
     from .bot import WhiskersBot
@@ -183,6 +185,17 @@ PACKS: dict[str, dict[str, list[tuple[str, ...]]]] = {
             ("owner", "barely, I stayed up till 2", "chime"),
             ("quiet", "Nobody says anything for a few minutes"),
             ("friend", "*comes back from the kitchen* where did the mouse go?", "reply"),
+        ],
+        # As in real chat with General Kenobi: once he's picked up he stays in their arms (no padding over or
+        # sniffing their hand) until he's set down, and a message to Brandon about him isn't his to answer.
+        "held": [
+            ("regular", "*sees you and says* hello there"),
+            ("regular", "*picks you up with both hands and holds you gently against my chest*", "reply"),
+            ("regular", "*keeps holding you and scratches under your chin with one finger*", "reply"),
+            ("owner", "lol look at him", "chime"),
+            ("regular", "*carries you over to the window*", "reply"),
+            ("regular", "*sets you down on the windowsill*", "reply"),
+            ("regular", "*sits down on the couch*", "reply"),
         ],
         "3am": [
             ("owner", "*is trying to sleep at 3am*"),
@@ -456,9 +469,8 @@ TRANSCRIPT_FILE = "simulation-transcript.txt"  # in data/: the transcript so far
 FIRST_PERSON = re.compile(r"\*[^*]*\b(I|I'm|me|my|myself)\b[^*]*\*")
 DOG_LIKE = re.compile(r"\b(wag(s|ging|ged)?|panting|barks?|barking|woofs?)\b", re.I)
 SCREEN = re.compile(r"\b(phones?|screens?|links?|gifs?|pictures?)\b", re.I)  # things only on people's screens
+TV = re.compile(r"\b(tv|television|console|game|games|monitor)\b", re.I)  # a screen that really is in the room
 # A reply that only watches: the model's fallback when it doesn't know what to do.
-PASSIVE_START = re.compile(r"^[^a-z]*(tilts|tips|cocks|looks|stares|blinks|watches|freezes|stops|pauses|peers|"
-                           r"glances)\b", re.I)
 HOLDING_UP = [(1, 10), (11, 20), (21, 30), (31, 10**6)]  # replies into a scene, for how Whiskers holds up
 
 
@@ -471,12 +483,6 @@ class Played:
     warnings: int
     feeling: str = "neutral"  # how what the person did felt to Whiskers
     held_against: bool = False  # a dislike that cost them his trust
-
-
-def says_sound(reply: str) -> bool:
-    """True if Whiskers says a cat sound out loud (MRRP!), not just does one inside an action (*purrs*)."""
-    return any(is_cat_sound(token) for part in ACTION_OR_PLAIN.split(reply)
-               if not part.strip().startswith(("*", "_")) for token in part.split())
 
 
 def _percent(part: int, whole: int) -> str:
@@ -581,8 +587,9 @@ def checks(reply: str, raw: str, earlier: list[str], ignore: set[str] = frozense
         found.append("I/my inside an action")
     if DOG_LIKE.search(reply):
         found.append("dog-like: " + DOG_LIKE.search(reply).group(0).lower())
-    if SCREEN.search(reply):
-        found.append("touches a screen: " + SCREEN.search(reply).group(0).lower())
+    screen = SCREEN.search(reply)
+    if screen and not (screen.group(0).lower().startswith("screen") and TV.search(reply)):
+        found.append("touches a screen: " + screen.group(0).lower())
     if len(reply) > 350:
         found.append(f"long ({len(reply)} characters)")
     repeats = repeated_actions(earlier[-2:] + [reply], ignore=ignore, times=3)  # three messages in a row
@@ -757,6 +764,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 async def ready(_text: str) -> None:
                     posted.append(time.monotonic())
 
+                before = brain.last_now(channel_id)  # where Whiskers was before this reply
                 for attempt in range(2):
                     posted.clear()
                     try:
@@ -774,6 +782,9 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 await brain.record_own_message(msg, next(ids), reply, time.time(), unprompted=kind == "mischief")
                 note, raw = brain.last_scene(channel_id), brain.last_raw_reply(channel_id)
                 found = checks(reply, raw, replies, ignore=props)
+                misplaced = out_of_place(before, said, reply)
+                if misplaced:
+                    found.append(f"out of place: {misplaced} (was {before})")
                 replies.append(reply)
                 played.append(Played(reply, seconds, len(replies), len(found)))
                 lines += [said] + ([reacted] if reacted else []) + [f"    (scene: {note or '-'})"]

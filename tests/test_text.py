@@ -182,3 +182,21 @@ def test_replies_are_read_from_json_even_while_being_written():
     assert narration_as_action("He flops over!", "Whiskers") == "*flops over*"
     assert narration_as_action("Hello there, I am a cat.", "Whiskers") == ""
     assert narration_as_action("What do you want?", "Whiskers") == ""
+
+
+def test_a_reply_that_doesnt_fit_where_whiskers_was_is_spotted():
+    from whiskers.text import out_of_place, position_of
+
+    assert position_of("in Kenobi's arms, purring") == "held"
+    assert position_of("on Milo's belly, grooming") == "person"
+    assert position_of("on the arm of Kenobi's chair, kneading") == "high"
+    assert position_of("on the floor, batting the catnip mouse") == "floor"
+    assert position_of("by the window") is None
+    assert out_of_place("on the floor near the desk", "Milo: *keeps typing*",
+                        "*pushes a cup slowly toward the edge*") == "reaches up from the floor"
+    assert out_of_place("on the floor near the desk", "Milo: *keeps typing*", "*jumps onto the desk and pushes a cup*") is None
+    assert out_of_place("on Milo's belly", "Brandon: come here buddy",
+                        "*trots over to Brandon*") == "walks off someone without getting down"
+    assert out_of_place("on Milo's belly", "Brandon: come here buddy", "*hops down and trots over to Brandon*") is None
+    assert out_of_place("in Kenobi's arms", "Kenobi: *sets you down on the floor*", "*trots off*") is None  # moved
+    assert out_of_place("in Kenobi's arms", "Kenobi: *keeps holding*", "*pads over to the door*") == "walks while being held"

@@ -391,7 +391,9 @@ def test_a_cat_that_has_been_silent_is_reminded_it_has_a_voice(cfg, tmp_path):
             await brain.record_own_message(msg, 701 + i * 10, sent, 2000.0 + i)
             if i == 3:
                 assert "You haven't made a sound" not in brain.llm.calls[-1][0][-1]["content"]
-        assert "You haven't made a sound in a while" in brain.llm.calls[-1][0][-1]["content"]
+        notes = brain.llm.calls[-1][0][-1]["content"]
+        assert "You haven't made a sound out loud in a while" in notes
+        assert 'Your last messages began with "watches" and "watches"' in notes  # and he keeps just watching
         await brain.db.close()
 
     asyncio.run(go())
@@ -720,3 +722,31 @@ def test_whiskers_knows_where_he_is_and_what_hes_busy_with_next_time(cfg, tmp_pa
         await brain.db.close()
 
     asyncio.run(go())
+
+
+def test_whiskers_is_reminded_what_he_can_reach_from_where_he_is(cfg):
+    brain = make_brain(cfg)
+
+    def note(doing):
+        return next(n for n in brain.context_notes(1, [], [], doing=doing) if n.startswith("Where you are"))
+
+    held = note("in Kenobi's arms, purring")
+    assert "You're being held, so you can't walk, sit, jump or reach anything" in held
+    assert "If someone has just picked you up, put you down or moved you" in held
+    assert "nothing on a table, desk, counter" in note("on the floor by the table, begging")
+    assert "to go anywhere else you hop down first" in note("curled up on Brandon's lap")
+    assert "jump down first" in note("on the arm of Kenobi's chair, kneading")
+    toy = note("on the floor, batting the catnip mouse")
+    assert "You're busy playing: keep at it unless someone does something with you" in toy
+    assert "busy playing" not in held
+    assert "busy playing" not in note("in Milo's arms, eyeing the catnip mouse")  # held, so not playing
+
+
+def test_someone_pinging_another_person_at_home_is_left_to_them(cfg):
+    brain = make_brain(cfg)
+    brain._room[10] = {3: ("General Kenobi", 990.0), 2: ("user2", 995.0)}
+    quiet = GuildSettings(reactions=False)
+    ping = incoming("@Brandon 🤣 Im holding the cat with my two hands.", author=2, mentions_other=True)
+    assert brain.decide(ping, quiet, 0, now=1000.0, home=True).reply is None
+    roleplay = incoming("*hands the cat to @Brandon*", author=2, mentions_other=True)
+    assert brain.decide(roleplay, quiet, 0, now=1000.0, home=True).reply == "home"  # still part of the scene

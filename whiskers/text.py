@@ -239,6 +239,75 @@ def cat_only(text: str) -> str:
     return result
 
 
+def says_sound(reply: str) -> bool:
+    """True if Whiskers says a cat sound out loud (MRRP!), not just does one inside an action (*purrs*)."""
+    return any(is_cat_sound(token) for part in ACTION_OR_PLAIN.split(reply)
+               if not part.strip().startswith(("*", "_")) for token in part.split())
+
+
+# A reply that opens by just reacting (tilting his head, looking, pausing) instead of doing something.
+PASSIVE_START = re.compile(r"^[^a-z]*(tilts|tips|cocks|looks|stares|blinks|watches|freezes|stops|pauses|peers|"
+                           r"glances)\b", re.I)
+
+# Where Whiskers is, from his own note after a reply ("in Kenobi's arms, purring", "on the floor by the desk"),
+# so the next reply only does what he can do from there.
+HELD = re.compile(r"\b(in (\w+'s |his |her |their |both )?(arms|hands)|held|being carried|carried|cradled|hugged)\b", re.I)
+ON_PERSON = re.compile(r"\b(lap|belly|chest|shoulder|stomach)\b", re.I)
+UP_HIGH = re.compile(r"\b(on|onto|across) (the |a |an |his |her |their |\w+'s )?(kitchen |coffee |dining )?(table|desk|counter|"
+                     r"countertop|shelf|bookshelf|windowsill|window sill|ledge|fridge|dresser|cabinet|keyboard|laptop|"
+                     r"armrest|chair arm|arm of|back of the|cat tree|top of)\b", re.I)
+ON_FURNITURE = re.compile(r"\b(on|in) (the |a |his |her |their |\w+'s )?(couch|sofa|bed|chair|cushion|pillow|ottoman|"
+                          r"stool|beanbag)\b", re.I)
+ON_FLOOR = re.compile(r"\b(floor|ground|rug|carpet)\b|\bunder (the |a )?(couch|bed|table|desk|chair)\b", re.I)
+TOY = re.compile(r"\b(toys?|mouse|ball|feather|wand|string|yarn|catnip|bell|sock|bottle cap|hair tie)\b", re.I)
+REACH = {
+    "held": "You're being held, so you can't walk, sit, jump or reach anything, and your paws aren't free: you can "
+            "purr, go limp, knead their arm, rub your head on their chest or chin, or squirm to get down.",
+    "person": "You're on someone: you can reach them, but to go anywhere else you hop down first.",
+    "high": "You're up high: you can reach what's up there; to get down to the floor or onto a lap, jump down first.",
+    "furniture": "You're on furniture: you can reach whoever is on it with you; for the floor, a table or anyone "
+                 "else, hop down or jump across first.",
+    "floor": "You're on the floor: you can reach legs, feet and things on the floor, but nothing on a table, desk, "
+             "counter or anyone's lap until you jump up.",
+}
+
+
+def position_of(now: str) -> str | None:
+    """Where Whiskers is, roughly, from his note: held, on a person, up high, on furniture or on the floor."""
+    for name, pattern in (("held", HELD), ("person", ON_PERSON), ("high", UP_HIGH), ("furniture", ON_FURNITURE),
+                          ("floor", ON_FLOOR)):
+        if pattern.search(now or ""):
+            return name
+    return None
+
+
+MOVED = re.compile(r"\b(picks?|scoops?|lifts?|carries|carry|holds?|sets?|puts?|places?|drops?|tosses|hands?)\b"
+                   r".{0,30}\b(you|him|her|whiskers|kitty|the cat)\b", re.I)
+REACHES_UP = re.compile(r"\b(on the (table|desk|counter)|keyboard|laptop|cup|mug|glass|plate|cereal|countertop)\b", re.I)
+GETS_UP = re.compile(r"\b(jump|jumps|jumped|hop|hops|hopped|leap|leaps|leapt|springs?|climbs?|scrambles?|vaults?|"
+                     r"stretches up|front paws on|paws on the edge)\b", re.I)
+GETS_DOWN = re.compile(r"\b(wriggl|squirm|twists free|(leap|jump|hop|slide|slip|pour|spring|drop|tumble)s? (down|off|"
+                       r"out|free)|put down|set down)", re.I)
+WALKS = re.compile(r"\b(pads|trots|walks|wanders|saunters|darts|runs|races|heads|sits down|stalks|creeps|prances|"
+                   r"strolls|scampers)\b", re.I)
+
+
+def out_of_place(before: str, said: str, reply: str) -> str | None:
+    """What doesn't fit about a reply, given where Whiskers was before it (`before`, his note) and what the
+    person did (`said`): walking off while held, padding away from a lap without getting down, or reaching
+    a table from the floor. None if it fits, or if the person just moved him."""
+    if MOVED.search(said):
+        return None
+    where = position_of(before)
+    if where == "held" and WALKS.search(reply) and not GETS_DOWN.search(reply):
+        return "walks while being held"
+    if where == "person" and WALKS.search(reply) and not GETS_DOWN.search(reply):
+        return "walks off someone without getting down"
+    if where == "floor" and REACHES_UP.search(reply) and not GETS_UP.search(reply):
+        return "reaches up from the floor"
+    return None
+
+
 def makes_sound(text: str) -> bool:
     """True if a message has a cat sound in it, said ("MRRP!") or done (*purrs*, *hisses at the vacuum*)."""
     return bool(SOUND_WORD.search(text)) or any(is_cat_sound(token) for token in text.split())

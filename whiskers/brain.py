@@ -28,8 +28,8 @@ from .prompts import (
 )
 from .scheduler import Scheduler
 from .text import (
-    ago, as_stage_directions, cat_only, clean_reply, keywords, makes_sound, narration_as_action, no_wagging, read_reply,
-    repeated_actions, written_reply,
+    PASSIVE_START, REACH, TOY, ago, as_stage_directions, cat_only, clean_reply, keywords, narration_as_action,
+    no_wagging, position_of, read_reply, repeated_actions, says_sound, written_reply,
 )
 
 log = logging.getLogger("whiskers.brain")
@@ -154,6 +154,7 @@ class Incoming:
     created_at: float
     mentions_me: bool = False
     replies_to_me: bool = False
+    mentions_other: bool = False  # @mentions someone other than Whiskers
     is_dm: bool = False
     owner_id: int = 0  # Whiskers' human in this server
     replies_to_other: bool = False  # a reply to someone else's message, not Whiskers'
@@ -422,8 +423,8 @@ class Brain:
         first_name = msg.author_name.split()[0].lower() if msg.author_name.split() else ""
         if ROLEPLAY.search(text) or (first_name and text.lower().startswith(first_name + " ")):
             return False  # roleplay, or someone writing what they do by name ("Milo picks him up")
-        if msg.replies_to_other:
-            return True
+        if msg.replies_to_other or msg.mentions_other:
+            return True  # a reply to someone else's message, or "@Brandon look, I'm holding the cat"
         if CAT_WORDS.search(text):
             return False
         if not self.others_here(msg.channel_id, msg.author_id, now):
@@ -677,7 +678,8 @@ class Brain:
 
     def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
                       repeating: list[str] | None = None, news: list[str] | None = None,
-                      now: float | None = None, quiet: bool = False, mischief: str = "", doing: str = "") -> list[str]:
+                      now: float | None = None, quiet: bool = False, mischief: str = "", doing: str = "",
+                      opening: str = "") -> list[str]:
         """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
         None of it depends on the next message, so it can be read ahead of time."""
         now = time.time() if now is None else now
@@ -689,12 +691,21 @@ class Brain:
         if scene:
             notes.append(f"Where things stood after your last message: {scene}")
         if doing:  # so he moves on from where he really is: off the chair arm before chasing a toy on the floor
-            notes.append(f"Where you are and what you're doing: {doing}.")
+            note = f"Where you are and what you're doing: {doing}."
+            where = position_of(doing)
+            if where:
+                note += " " + REACH[where]
+            if TOY.search(doing) and where != "held":
+                note += " You're busy playing: keep at it unless someone does something with you or calls you."
+            notes.append(note + " If someone has just picked you up, put you down or moved you, you're where they "
+                                "put you now.")
+        if opening:
+            notes.append(f"Your last messages began with {opening}. Start this one with something you actively do.")
         if repeating:
             notes.append(f"You've been repeating yourself ({', '.join(repeating)}). Do something different this time.")
         if quiet:
-            notes.append("You haven't made a sound in a while. A mrrp, meow, purr or hiss would fit if the moment "
-                         "calls for one.")
+            notes.append("You haven't made a sound out loud in a while. A mrrp, meow, chirp or hiss would fit if the "
+                         "moment calls for one.")
         if mischief:
             notes.append(f"You're in a mischievous mood: react to what just happened first, then add some trouble of "
                          f"your own ({mischief}, perhaps), unless someone is sad, it's a serious moment or you're busy "
@@ -952,13 +963,16 @@ class Brain:
         # A habit is the same thing in half of Whiskers' last six messages; doing something twice is fine.
         repeating = repeated_actions(own, ignore={self.name, *names, *props}, times=3)
         # Whiskers copies its own recent messages, so a run of silent ones would keep it silent for good.
-        quiet = len(own) >= QUIET_AFTER and not any(makes_sound(m) for m in own[-QUIET_AFTER:])
+        quiet = len(own) >= QUIET_AFTER and not any(says_sound(m) for m in own[-QUIET_AFTER:])
+        # Two passive openings in a row ("tilts his head...", "looks at...") are the model running out of ideas.
+        starts = [PASSIVE_START.match(m) for m in own[-2:]]
+        opening = " and ".join(f'"{m.group(1).lower()}"' for m in starts) if len(own) >= 2 and all(starts) else ""
         news = [n for p in profiles if (n := self._news.pop((guild_id, p.user_id), None))]
         # Now and then Whiskers starts something himself instead of only answering (/whiskers mischief).
         level = MISCHIEF.get((await self.db.guild_settings(guild_id)).mischief) if guild_id else None
         mischief = self.mischief_idea(own) if level and self.rng.random() < level.nudge else ""
         notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet,
-                                   mischief=mischief, doing=doing)
+                                   mischief=mischief, doing=doing, opening=opening)
         return notes, {p.user_id for p in profiles}, {m.id for m in memories}
 
     def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:

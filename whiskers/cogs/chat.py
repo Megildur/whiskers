@@ -167,6 +167,7 @@ class Chat(commands.Cog):
         replied = message.reference.resolved if message.reference else None
         replies_to_me = isinstance(replied, discord.Message) and replied.author.id == me.id
         replies_to_other = isinstance(replied, discord.Message) and replied.author.id not in (me.id, message.author.id)
+        mentions_other = any(user.id not in (me.id, message.author.id) for user in message.mentions)
         return Incoming(
             message_id=message.id,
             guild_id=message.guild.id if message.guild else 0,
@@ -178,6 +179,7 @@ class Chat(commands.Cog):
             mentions_me=mentions_me,
             replies_to_me=replies_to_me,
             replies_to_other=replies_to_other,
+            mentions_other=mentions_other,
             is_dm=message.guild is None,
         )
 
