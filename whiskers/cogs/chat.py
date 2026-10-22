@@ -56,6 +56,7 @@ class Chat(commands.Cog):
     def __init__(self, bot: WhiskersBot) -> None:
         self.bot = bot
         self._tasks: set[asyncio.Task] = set()
+        self._cant_react: set[int] = set()  # channels where Discord refused an emoji reaction
         self._mischief: asyncio.Task | None = None
 
     async def cog_load(self) -> None:
@@ -191,9 +192,15 @@ class Chat(commands.Cog):
             return permissions.send_messages_in_threads
         return permissions.send_messages
 
-    async def _react(self, message: discord.Message, emoji: str) -> None:
+    async def _react(self, message: discord.Message | discord.PartialMessage, emoji: str) -> None:
         try:
             await message.add_reaction(emoji)
+        except discord.Forbidden as error:
+            channel = message.channel.id
+            if channel not in self._cant_react:  # say so once, or a missing permission looks like a quiet cat
+                self._cant_react.add(channel)
+                log.warning("Can't add emoji reactions in %s (it needs the Add Reactions and Read Message History "
+                            "permissions): %s", channel, error)
         except discord.HTTPException:
             pass
 
@@ -223,8 +230,14 @@ class Chat(commands.Cog):
                 first = first or sent.id
             return first
 
+        async def react(message_id: int, emoji: str) -> None:
+            partial = getattr(channel, "get_partial_message", None)
+            if partial:
+                await self._react(partial(message_id), emoji)
+
         try:
-            await self.bot.brain.respond(job, typing=lambda: typing_indicator(channel), deliver=deliver)
+            await self.bot.brain.respond(job, typing=lambda: typing_indicator(channel), deliver=deliver,
+                                         react=react if settings.reactions and msg.guild_id else None)
         except LLMError as error:
             log.warning("Couldn't think of a reply: %s", error)
         except Exception:

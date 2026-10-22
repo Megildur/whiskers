@@ -1,4 +1,5 @@
 import random
+import time
 
 from fakes import ScriptedLLM
 from whiskers.brain import Brain, Incoming, ReplyJob, chattiness_for, is_allowed
@@ -750,3 +751,86 @@ def test_someone_pinging_another_person_at_home_is_left_to_them(cfg):
     assert brain.decide(ping, quiet, 0, now=1000.0, home=True).reply is None
     roleplay = incoming("*hands the cat to @Brandon*", author=2, mentions_other=True)
     assert brain.decide(roleplay, quiet, 0, now=1000.0, home=True).reply == "home"  # still part of the scene
+
+
+def test_what_people_do_to_him_in_roleplay_gets_a_fitting_emoji(cfg):
+    brain = make_brain(cfg, rng=EagerRandom())
+
+    def react(text, channel):
+        return brain.decide(incoming(text, channel=channel), GuildSettings(), 0, now=1000.0, home=True).reaction
+
+    loving = {"😻", "😽", "💕"}
+    assert react("*starts petting Whiskers*", 1) in loving
+    assert react("*kisses the top of his head*", 2) in loving
+    assert react("*scratches behind your ears*", 3) in loving
+    assert react("*boops your nose*", 4) in loving
+    assert react("*kicks him*", 5) in {"😾", "🙀"}
+    assert react("*kicks off my shoes*", 6) not in {"😾", "🙀"}  # not done to him
+    assert react("*tosses you a catnip mouse*", 7) in {"👀", "😼"}
+    assert react("*pours you a bowl of goat milk*", 8) in {"🐟", "😋", "👀"}
+    assert react("gotta go, bye everyone", 9) in {"👋", "😿"}
+
+
+def test_how_he_felt_can_show_as_an_emoji_but_only_once_per_message(cfg):
+    brain = make_brain(cfg)  # every roll is 0.5
+    pets = incoming("*pets him*", message_id=700)
+    assert brain.reaction_to_feeling(pets, "loved") is None  # 40%: not this time
+    assert brain.reaction_to_feeling(pets, "neutral") is None
+    assert brain.reaction_to_feeling(incoming("*pulls your tail*", message_id=701), "hated") in {"😾", "🙀"}
+    eager = make_brain(cfg, rng=EagerRandom())
+    assert eager.reaction_to_feeling(pets, "loved") in {"😻", "😽", "💕"}
+    assert eager.reaction_to_feeling(pets, "loved") is None  # it already has one from him
+    treats = incoming("treats for you", message_id=702, channel=11)
+    assert eager.decide(treats, GuildSettings(), 0, now=1000.0, home=True).reaction
+    assert eager.reaction_to_feeling(treats, "loved") is None  # already reacted when it came in
+
+
+def test_after_replying_he_puts_his_feeling_on_their_message(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, json.dumps({"scene": "tail pulled", "reply": "*hisses and bolts*",
+                                                      "feeling": "hated", "about": "tail pulling"}))
+        await brain.db.connect()
+        msg = incoming("*pulls your tail*", message_id=800, mentions_me=True)
+        reacted = []
+
+        async def react(message_id, emoji):
+            reacted.append((message_id, emoji))
+
+        await brain.compose(msg, "direct", react=react)
+        assert reacted and reacted[0][0] == 800 and reacted[0][1] in {"😾", "🙀"}
+        await brain.compose(incoming("*pulls your tail*", message_id=801, mentions_me=True), "direct")  # no react
+        await brain.db.close()
+
+    asyncio.run(go())
+
+
+def test_a_restart_doesnt_make_him_forget_where_he_was(cfg, tmp_path):
+    import asyncio
+    import json
+
+    reply = json.dumps({"scene": "Kenobi is petting him on the sofa", "reply": "*purrs*",
+                        "now": "on Kenobi's lap, purring"})
+
+    async def go():
+        before = brain_with(cfg, tmp_path, reply)
+        await before.db.connect()
+        msg = incoming("*pets him*", message_id=900, mentions_me=True)
+        await before.observe(msg, GuildSettings(reactions=False), 0)
+        await before.compose(msg, "direct")
+        await before.record_own_message(msg, 901, "*purrs*", time.time())
+        await before.db.close()
+
+        after = brain_with(cfg, tmp_path, reply)  # the bot restarted
+        await after.db.connect()
+        msg = incoming("*keeps petting*", message_id=902, mentions_me=True)
+        await after.observe(msg, GuildSettings(reactions=False), 0)
+        await after.compose(msg, "direct")
+        notes = after.llm.calls[-1][0][-1]["content"]
+        assert "Where things stood after your last message: Kenobi is petting him on the sofa" in notes
+        assert "Where you are and what you're doing: on Kenobi's lap, purring." in notes
+        await after.db.close()
+
+    asyncio.run(go())

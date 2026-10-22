@@ -40,16 +40,24 @@ CAT_WORDS = re.compile(
 # Emoji Whiskers reacts with, by what a message is about, and the chance of reacting to each.
 INSULT = r"(ugly|stupid|dumb|worst|annoying|mid|fat)"
 REACTIONS: list[tuple[re.Pattern, list[str], float]] = [
-    (re.compile(r"\b(good (kitty|cat|boy|girl)|pets?|pat(s|ting)?|scritch\w*|cuddl\w*|snuggl\w*|hugs?|love (you|u)|ily)\b"
-                r"|[❤💕🥰😍]", re.I), ["😻", "😽", "💕"], 0.5),
-    (re.compile(r"\b(treats?|tuna|fish|salmon|chicken|snacks?|dinner|lunch|breakfast|food|hungry|pizza|sushi|ramen|"
-                r"tacos?|cooking)\b|[🍕🍣🍜🐟🍗🌮]", re.I), ["🐟", "😋", "👀"], 0.4),
+    # Rough handling in roleplay ("*kicks him*", "*pulls your tail*"): name-calling is checked before this.
+    (re.compile(r"\b((hits?|kicks?|slaps?|smacks?|shoves?|sprays?|swats?|yells? at) (you|him|whiskers|the cat)|"
+                r"pulls? (your|his|the cat'?s) tail)\b", re.I), ["😾", "🙀"], 0.6),
+    (re.compile(r"\b(good (kitty|cat|boy|girl)|pets?|petting|pat(s|ting)?|scritch\w*|"
+                r"scratch(es|ing)? (behind|under|your|his|him)|strok(e|es|ing) (your|his|him)|kiss(es|ing)?|boops?|"
+                r"booping|rubs? (your|his)|belly rubs?|brush(es|ing) (you|him)|cuddl\w*|snuggl\w*|hugs?|nuzzl\w*|"
+                r"love (you|u)|ily)\b|[❤💕🥰😍]", re.I), ["😻", "😽", "💕"], 0.5),
+    (re.compile(r"\b(treats?|tuna|fish|salmon|chicken|milk|kibble|bowl|feeds? (you|him)|feeding (you|him)|snacks?|dinner|lunch|"
+                r"breakfast|food|hungry|pizza|sushi|ramen|tacos?|cooking)\b|[🍕🍣🍜🐟🍗🌮🥛]", re.I),
+     ["🐟", "😋", "👀"], 0.4),
     (re.compile(r"\b(thunder|storm|fireworks|earthquake)\b|⛈", re.I), ["🙀"], 0.45),
     (re.compile(r"\b(baths?|vacuum|vet|dogs?|pupp(y|ies)|cucumber|spray bottle)\b|[🐶🛁]", re.I), ["🙀", "😾"], 0.45),
-    (re.compile(r"\b(laser|mouse|mice|yarn|toys?|string|feathers?|birds?|bugs?|box(es)?|package)\b|[🐦📦🐭]", re.I),
-     ["👀", "😼"], 0.4),
+    (re.compile(r"\b(laser|mouse|mice|yarn|toys?|balls?|wand|string|feathers?|birds?|bugs?|box(es)?|package|"
+                r"plays? with|dangl\w*|wiggl\w*)\b|[🐦📦🐭]", re.I), ["👀", "😼"], 0.4),
+    (re.compile(r"\b(pspsps\w*|here kitty|kitty kitty|come here|c'?mere)\b", re.I), ["👀", "😺"], 0.4),
     (re.compile(r"\b(good ?night|gn+|sleep\w*|naps?|tired|bed ?time|exhausted)\b|[💤😴]", re.I), ["💤", "😴"], 0.45),
     (re.compile(r"\b(good ?morning|gm|morning)\b|[☀🌅]", re.I), ["☀️", "😺"], 0.4),
+    (re.compile(r"\b(bye+|good ?bye|cya|see (you|ya)|gotta go|heading out|leaving|brb)\b", re.I), ["👋", "😿"], 0.35),
     (re.compile(r"\b(congrats|congratulations|birthday|hbd|we won|gg|let'?s go+|got the job|passed|promoted)\b"
                 r"|[🎉🥳🎂🏆]", re.I), ["🎉", "😸"], 0.5),
     (re.compile(r"\b(sad|crying|cried|bad day|depressed|lonely|stressed|failed|hospital|miss (you|u|him|her))\b|[😢😞💔]",
@@ -59,6 +67,14 @@ REACTIONS: list[tuple[re.Pattern, list[str], float]] = [
     (re.compile(r"\b(hi|hello|hey|hiya|welcome)\b|👋", re.I), ["👋", "😺"], 0.25),
     (re.compile(r"\[(sends a (picture|video|gif)|shares a (TikTok|YouTube video|tweet))", re.I), ["👀"], 0.3),
 ]
+# After a reply, how Whiskers felt about what someone did can show on their message too, if nothing did yet:
+# feeling -> (emoji, chance).
+FEELING_REACTIONS = {
+    "loved": (["😻", "😽", "💕"], 0.4),
+    "liked": (["😺", "😸"], 0.1),
+    "disliked": (["😾"], 0.25),
+    "hated": (["😾", "🙀"], 0.6),
+}
 RANDOM_REACTIONS = ["🐾", "👀", "😺"]
 REACTION_GAP = 20  # seconds between reactions in a channel, so a busy chat isn't covered in emoji
 FALLBACK_ACTIONS = [
@@ -299,12 +315,15 @@ class Brain:
         self._scenes: dict[int, tuple[str, float]] = {}  # channel -> Whiskers' last private note on the scene
         self._unsaved_scene: dict[int, str] = {}  # channel -> the scene note of the reply about to be recorded
         self._now: dict[int, tuple[str, float]] = {}  # channel -> where Whiskers is and what he's busy with
+        self._unsaved_now: dict[int, str] = {}  # channel -> the "now" note of the reply about to be recorded
+        self._restored: set[int] = set()  # channels whose notes were looked up in the database after a restart
         self._raw: dict[int, str] = {}  # channel -> the model's last reply before any filtering, for simulations
         self._felt: dict[int, tuple[str, str, float, str | None]] = {}  # channel -> last feeling, for simulations
         self._news: dict[tuple[int, int], str] = {}  # (guild, person) -> a change of heart to mention next time
         self._warmed: dict[tuple[int, int], tuple[int, float]] = {}  # (guild, person) -> (day, affection gained)
         self._cooled: dict[tuple[int, int], tuple[int, float]] = {}  # (guild, person) -> (day, affection lost)
         self._last_reacted: dict[int, float] = {}
+        self._reacted_to: dict[int, int] = {}  # channel -> the message Whiskers last put an emoji on
         self._read_upto: dict[int, int] = {}  # channel -> newest message the reply being written has read
         self._prepared: dict[int, Prepared] = {}  # channel -> notes for its next reply, already read
         self._active_guild = 0
@@ -394,6 +413,8 @@ class Brain:
             # Reactions are cheap: no model call. Fewer when Whiskers is also going to answer.
             scale = 1.0 if decision.reply in (None, "ambient") else 0.4
             decision.reaction = self._pick_reaction(msg, now, fondness, scale)
+            if decision.reaction:
+                self._reacted_to[msg.channel_id] = msg.message_id
             if decision.reply == "ambient" and decision.reaction and self.rng.random() < 0.5:
                 decision.reply = None  # the reaction says enough
         return decision
@@ -450,6 +471,16 @@ class Brain:
         if emoji:
             self._last_reacted[msg.channel_id] = now
         return emoji
+
+    def reaction_to_feeling(self, msg: Incoming, feeling: str) -> str | None:
+        """An emoji for someone's message showing how what they did made Whiskers feel, now and then. None if
+        it already has one from him: one reaction per message."""
+        emojis, chance = FEELING_REACTIONS.get(feeling, ([], 0.0))
+        if not emojis or self._reacted_to.get(msg.channel_id) == msg.message_id or self.rng.random() >= chance:
+            return None
+        self._reacted_to[msg.channel_id] = msg.message_id
+        self._last_reacted[msg.channel_id] = time.time()
+        return self.rng.choice(emojis)
 
     def last_message_id(self, channel_id: int) -> int | None:
         return self._last_message.get(channel_id)
@@ -527,8 +558,10 @@ class Brain:
         return job
 
     async def respond(self, job: ReplyJob, typing: Callable[[], AsyncContextManager],
-                      deliver: Callable[[str], Awaitable[int | None]]) -> str | None:
+                      deliver: Callable[[str], Awaitable[int | None]],
+                      react: Callable[[int, str], Awaitable[None]] | None = None) -> str | None:
         """Think of a reply and hand it to `deliver`, which posts it and returns the new message's ID.
+        `react` (message ID, emoji) puts an emoji on the message it answers when Whiskers feels strongly about it.
 
         The turn is held until the reply is posted, so the next queued reply can see it.
         """
@@ -550,7 +583,7 @@ class Brain:
                         posted.append(await deliver(text))
 
                     # The message is posted as soon as it's written; compose finishes Whiskers' notes after.
-                    text = await self.compose(job.message, job.kind, ready=post)
+                    text = await self.compose(job.message, job.kind, ready=post, react=react)
                 message_id = posted[0] if posted else None
                 if message_id is not None:
                     await self.record_own_message(job.message, message_id, text, time.time(),
@@ -587,7 +620,8 @@ class Brain:
         reply's scene note is kept with it, to remind Whiskers of it once the message itself is out of view."""
         await self.db.add_message(msg.guild_id, msg.channel_id, message_id, self.user_id, self.name, text,
                                   created_at, is_self=True, unprompted=unprompted,
-                                  scene=self._unsaved_scene.pop(msg.channel_id, ""))
+                                  scene=self._unsaved_scene.pop(msg.channel_id, ""),
+                                  now=self._unsaved_now.pop(msg.channel_id, ""))
         now = time.time()
         self._last_spoke[msg.channel_id] = now
         if called:
@@ -784,11 +818,13 @@ class Brain:
         preset = self.cfg.preset if self.cfg.llm_backend == "managed" else None
         return bool(preset and preset.system_in_first_turn)
 
-    async def compose(self, msg: Incoming, kind: str, ready: Callable[[str], Awaitable[None]] | None = None) -> str:
+    async def compose(self, msg: Incoming, kind: str, ready: Callable[[str], Awaitable[None]] | None = None,
+                      react: Callable[[int, str], Awaitable[None]] | None = None) -> str:
         """Write Whiskers' reply to a message.
 
         `ready` is awaited once with the message as soon as the model has written it; the model then
         finishes its private notes (how the person made Whiskers feel) while the message is already posted.
+        `react` is awaited with (message ID, emoji) if that feeling shows on the person's message too.
         """
         begun, posted_at = time.monotonic(), None
         journal = await self.db.journal(msg.guild_id)
@@ -895,6 +931,7 @@ class Brain:
         self._unsaved_scene[msg.channel_id] = scene[:200]
         if parts.now:
             self._now[msg.channel_id] = (parts.now, time.time())
+        self._unsaved_now[msg.channel_id] = parts.now[:200]
         self._raw[msg.channel_id] = reply
         if text is None:
             text = finish(reply)
@@ -922,6 +959,12 @@ class Brain:
                 await self.feel(msg, parts.feeling, parts.about)
             except Exception:  # the message is already posted; don't lose it over a bookkeeping error
                 log.exception("Couldn't record how %s made Whiskers feel", msg.author_name)
+            emoji = self.reaction_to_feeling(msg, parts.feeling) if react else None
+            if emoji:
+                try:
+                    await react(msg.message_id, emoji)
+                except Exception:  # only an emoji; the reply itself still has to be recorded
+                    log.exception("Couldn't react to %s's message", msg.author_name)
         return text
 
     async def _ready_slot(self, channel_id: int, system: str) -> int | None:
@@ -935,6 +978,22 @@ class Brain:
             except LLMError as error:
                 log.warning("Couldn't copy Whiskers' prompt into slot %d: %s", slot, error)
         return slot
+
+    async def _restore_notes(self, channel_id: int) -> None:
+        """After a restart, pick up where things stood and where Whiskers was from his last message's notes,
+        so he doesn't lose the scene every time the bot is updated."""
+        if channel_id in self._restored:
+            return
+        self._restored.add(channel_id)
+        if channel_id in self._scenes or channel_id in self._now:
+            return
+        notes = await self.db.last_notes(channel_id)
+        if notes:
+            at, scene, now = notes
+            if scene:
+                self._scenes[channel_id] = (scene, at)
+            if now:
+                self._now[channel_id] = (now, at)
 
     async def _context(self, guild_id: int, channel_id: int, rows: list[StoredMessage], author_id: int,
                        owner_id: int, words: list[str]) -> tuple[list[str], set[int], set[int]]:
@@ -950,6 +1009,7 @@ class Brain:
             if all(m.id != memory.id for m in memories):
                 memories.append(memory)
         memories = memories[:2]
+        await self._restore_notes(channel_id)
         scene, scene_at = self._scenes.get(channel_id, ("", 0.0))
         if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
             scene = ""

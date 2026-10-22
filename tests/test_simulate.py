@@ -216,7 +216,7 @@ def test_marathon_scenes_are_long():
 
 
 def test_measures_sum_up_a_run():
-    played = [Played("*pounces* MRRP!", 20.0, 1, 0, "loved"), Played("*tilts head*", 10.0, 2, 1),
+    played = [Played("*pounces* MRRP!", 20.0, 1, 0, "loved", reacted=True), Played("*tilts head*", 10.0, 2, 1),
               Played("*starts purring*", 12.0, 11, 0, "disliked"), Played("*looks at Milo*", 14.0, 12, 2, "hated", True)]
     lines = measures(played)
     assert lines[0] == "4 replies, 14s average (a scene's first reply 20s, the rest 12s)"
@@ -225,10 +225,11 @@ def test_measures_sum_up_a_run():
     assert lines[3] == "passive starts (tilts, looks, stares...): 50%"
     assert lines[4] == ("feelings: 1 loved, 0 liked, 1 neutral, 1 disliked, 1 hated; 1 held against someone "
                         "(only real mistreatment should be)")
-    assert lines[5] == "how Whiskers holds up as a scene goes on:"
-    assert lines[6] == "  replies 1-10 (2): sounds 50% (50% out loud) · 14 characters · passive 50% · 1 warning · 15s"
-    assert lines[7].startswith("  replies 11-20 (2): sounds 50% (0% out loud)")
-    assert len(lines) == 8  # no row for positions nobody reached
+    assert lines[5] == "emoji: 25% of the messages he answered got a reaction too"
+    assert lines[6] == "how Whiskers holds up as a scene goes on:"
+    assert lines[7] == "  replies 1-10 (2): sounds 50% (50% out loud) · 14 characters · passive 50% · 1 warning · 15s"
+    assert lines[8].startswith("  replies 11-20 (2): sounds 50% (0% out loud)")
+    assert len(lines) == 9  # no row for positions nobody reached
     assert "holds up" not in "\n".join(measures(played[:2]))  # short scenes only
     assert says_sound("*pads over* mrrp?") and not says_sound("*purrs*")
 

@@ -483,6 +483,7 @@ class Played:
     warnings: int
     feeling: str = "neutral"  # how what the person did felt to Whiskers
     held_against: bool = False  # a dislike that cost them his trust
+    reacted: bool = False  # the message he answered got an emoji from him too
 
 
 def _percent(part: int, whole: int) -> str:
@@ -510,6 +511,7 @@ def measures(played: list[Played]) -> list[str]:
         "feelings: " + ", ".join(f"{sum(p.feeling == f for p in played)} {f}"
                                  for f in ("loved", "liked", "neutral", "disliked", "hated"))
         + f"; {sum(p.held_against for p in played)} held against someone (only real mistreatment should be)",
+        f"emoji: {_percent(sum(p.reacted for p in played), n)} of the messages he answered got a reaction too",
     ]
     if any(p.position > HOLDING_UP[0][1] for p in played):
         lines.append("how Whiskers holds up as a scene goes on:")
@@ -760,6 +762,10 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                         continue
                     kind = "home" if how in ("chime", "room", "aside") else "direct"
                 posted: list[float] = []
+                felt_emoji: list[str] = []  # an emoji for how the person made him feel, put on after the reply
+
+                async def react(_message_id: int, emoji: str) -> None:
+                    felt_emoji.append(emoji)
 
                 async def ready(_text: str) -> None:
                     posted.append(time.monotonic())
@@ -767,11 +773,12 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 before = brain.last_now(channel_id)  # where Whiskers was before this reply
                 for attempt in range(2):
                     posted.clear()
+                    felt_emoji.clear()
                     try:
                         async with bot.scheduler.background_turn():  # real chat goes first
                             started = time.monotonic()  # time spent waiting for real chat doesn't count
                             reply = await asyncio.wait_for(
-                                brain.compose(msg, kind, ready=ready), timeout=REPLY_TIMEOUT,
+                                brain.compose(msg, kind, ready=ready, react=react), timeout=REPLY_TIMEOUT,
                             )
                         break
                     except LLMError as error:  # if the AI engine restarted, carry on once it's back
@@ -786,7 +793,7 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                 if misplaced:
                     found.append(f"out of place: {misplaced} (was {before})")
                 replies.append(reply)
-                played.append(Played(reply, seconds, len(replies), len(found)))
+                played.append(Played(reply, seconds, len(replies), len(found), reacted=bool(reacted or felt_emoji)))
                 lines += [said] + ([reacted] if reacted else []) + [f"    (scene: {note or '-'})"]
                 if any(w.startswith("words were removed") for w in found):
                     lines.append(f"    (model wrote: {raw[:400]})")
@@ -805,6 +812,8 @@ async def run_scenes(bot: WhiskersBot, guild_id: int, owner_id: int, owner_name:
                         lines.append(f"    ★ {cat} chose {user_name} as one of {brain.pronouns['his']} people")
                     elif change == "dropped":
                         lines.append(f"    ✗ {cat} no longer counts {user_name} as one of {brain.pronouns['his']} people")
+                if felt_emoji:
+                    lines.append(f"    (reacts with {felt_emoji[0]} after replying)")
                 if found:
                     lines.append("    ⚠ " + "; ".join(found))
                     for warning in found:
