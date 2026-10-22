@@ -834,3 +834,29 @@ def test_a_restart_doesnt_make_him_forget_where_he_was(cfg, tmp_path):
         await after.db.close()
 
     asyncio.run(go())
+
+
+def test_after_a_long_quiet_spell_he_still_knows_where_he_was(cfg, tmp_path):
+    import asyncio
+    import json
+
+    async def go():
+        brain = brain_with(cfg, tmp_path, json.dumps({"scene": "Kenobi is back", "reply": "*stretches*"}))
+        await brain.db.connect()
+        brain._now[10] = ("on Kenobi's lap on the sofa, purring", time.time() - 6 * 3600)
+        msg = incoming("*gets up from the sofa* time for bed", message_id=950, mentions_me=True)
+        await brain.observe(msg, GuildSettings(reactions=False), 0)
+        await brain.compose(msg, "direct")
+        notes = brain.llm.calls[-1][0][-1]["content"]
+        assert ("When things last went quiet here you were on Kenobi's lap on the sofa, purring (6 hours ago). "
+                "You've had time to wander off since") in notes
+        assert "Where you are and what you're doing" not in notes  # not as if no time had passed
+
+        brain._now[10] = ("on Kenobi's lap on the sofa, purring", time.time() - 2 * 86400)  # too long ago
+        msg = incoming("*sits on the sofa*", message_id=952, mentions_me=True)
+        await brain.observe(msg, GuildSettings(reactions=False), 0)
+        await brain.compose(msg, "direct")
+        assert "When things last went quiet" not in brain.llm.calls[-1][0][-1]["content"]
+        await brain.db.close()
+
+    asyncio.run(go())

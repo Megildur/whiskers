@@ -85,6 +85,9 @@ ANTI_REPEAT = {"dry_multiplier": 0.8, "dry_base": 1.75, "dry_allowed_length": 2,
 HISTORY_CHAR_BUDGET = 10000  # about 3,000 tokens of chat; HISTORY_MESSAGES usually runs out first
 MESSAGE_CHAR_LIMIT = 400
 SILENCE_RESETS_CONTEXT = 3 * 3600
+# After a long silence a new scene starts, but for this long Whiskers still knows where he was when it went
+# quiet, in case someone picks up from there ("*gets up from the sofa*").
+WHERE_HE_WAS_KEPT = 24 * 3600
 EARLIER_NOTES = 10  # scene notes from before the chat the model sees, so what happened earlier isn't forgotten
 SPEECH_MIN_REFLECTIONS = 5  # journal updates before Whiskers may learn to communicate
 
@@ -713,7 +716,7 @@ class Brain:
     def context_notes(self, owner_id: int, profiles: list[Profile], memories: list[Memory], scene: str | None = None,
                       repeating: list[str] | None = None, news: list[str] | None = None,
                       now: float | None = None, quiet: bool = False, mischief: str = "", doing: str = "",
-                      opening: str = "") -> list[str]:
+                      opening: str = "", left: str = "") -> list[str]:
         """What Whiskers knows going into its next reply: who's around, what it remembers, where things stand.
         None of it depends on the next message, so it can be read ahead of time."""
         now = time.time() if now is None else now
@@ -733,6 +736,10 @@ class Brain:
                 note += " You're busy playing: keep at it unless someone does something with you or calls you."
             notes.append(note + " If someone has just picked you up, put you down or moved you, you're where they "
                                 "put you now.")
+        if left:
+            notes.append(f"When things last went quiet here you were {left}. You've had time to wander off since: "
+                         "if the newest message picks up from there, carry on from it; otherwise start from wherever "
+                         "a cat would be by now.")
         if opening:
             notes.append(f"Your last messages began with {opening}. Start this one with something you actively do.")
         if repeating:
@@ -1014,7 +1021,10 @@ class Brain:
         if time.time() - scene_at > SILENCE_RESETS_CONTEXT:
             scene = ""
         doing, doing_at = self._now.get(channel_id, ("", 0.0))
+        left = ""  # where he was before a long silence
         if time.time() - doing_at > SILENCE_RESETS_CONTEXT:
+            if doing and time.time() - doing_at < WHERE_HE_WAS_KEPT:
+                left = f"{doing} ({ago(time.time() - doing_at)})"
             doing = ""
         names = {r.author_name for r in rows if not r.is_self}
         # Only Whiskers' own habits count as repeating, not the people and things the scene is about.
@@ -1032,7 +1042,7 @@ class Brain:
         level = MISCHIEF.get((await self.db.guild_settings(guild_id)).mischief) if guild_id else None
         mischief = self.mischief_idea(own) if level and self.rng.random() < level.nudge else ""
         notes = self.context_notes(owner_id, profiles, memories, scene, repeating, news, quiet=quiet,
-                                   mischief=mischief, doing=doing, opening=opening)
+                                   mischief=mischief, doing=doing, opening=opening, left=left)
         return notes, {p.user_id for p in profiles}, {m.id for m in memories}
 
     def _still_fits(self, prepared: Prepared, rows: list[StoredMessage], system: str, now: float) -> bool:
